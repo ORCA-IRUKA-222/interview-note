@@ -37,13 +37,15 @@ export interface SpeechHandlers {
   onPartial(text: string): void;
   onFinal(text: string): void;
   onRunning(running: boolean): void;
-  onError(message: string): void;
+  /** code: network / denied / no-mic / unsupported。UI 側で原因別の案内を出すために渡す */
+  onError(message: string, code?: 'network' | 'denied' | 'no-mic' | 'unsupported'): void;
 }
 
 export class ContinuousRecognizer {
   private rec: RecognitionLike | null = null;
   private wanted = false;
   private failures = 0;
+  private networkErrors = 0;
   private restartTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -62,11 +64,12 @@ export class ContinuousRecognizer {
   start() {
     if (this.wanted) return;
     if (!getCtor()) {
-      this.h.onError('このブラウザは音声認識に対応していません（Chrome / Edge / Android の Chrome をお試しください）');
+      this.h.onError('このブラウザは音声認識に対応していません（Chrome / Edge をお試しください）', 'unsupported');
       return;
     }
     this.wanted = true;
     this.failures = 0;
+    this.networkErrors = 0;
     this.h.onRunning(true);
     this.open();
   }
@@ -98,6 +101,7 @@ export class ContinuousRecognizer {
 
     rec.onresult = (e) => {
       this.failures = 0;
+      this.networkErrors = 0;
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
@@ -111,16 +115,19 @@ export class ContinuousRecognizer {
       switch (e.error) {
         case 'not-allowed':
         case 'service-not-allowed':
-          this.h.onError('マイクの使用が許可されていません。ブラウザの設定で許可してください');
+          this.h.onError('マイクの使用が許可されていません。ブラウザの設定で許可してください', 'denied');
           this.stop();
           break;
         case 'audio-capture':
-          this.h.onError('マイクが見つかりません');
+          this.h.onError('マイクが見つかりません', 'no-mic');
           this.stop();
           break;
         case 'network':
           this.failures++;
-          this.h.onError('音声認識サーバーに接続できません（オンラインが必要です）');
+          this.networkErrors++;
+          this.h.onError('音声認識サーバーに接続できません', 'network');
+          // 何度聞き直しても届かないなら、電池と通信を無駄にしないよう止める
+          if (this.networkErrors >= 3) this.stop();
           break;
         default:
           // no-speech / aborted は無音や切り替えで普通に起きる

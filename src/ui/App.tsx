@@ -6,6 +6,8 @@ import { Study } from './Study';
 import { Karaoke } from './Karaoke';
 import { Search } from './Search';
 import { Settings } from './Settings';
+import { Stats } from './Stats';
+import { DragLayer } from './Organize';
 import { paths, useRoute } from './router';
 
 function TopBar() {
@@ -21,6 +23,9 @@ function TopBar() {
         </a>
         <a class="btn" href={paths.study()}>
           単語帳
+        </a>
+        <a class="btn" href={paths.stats()}>
+          分析
         </a>
         <a class="btn" href={paths.settings}>
           設定
@@ -45,6 +50,9 @@ export function App() {
       break;
     case 'search':
       body = <Search q={route.q} tag={route.tag} />;
+      break;
+    case 'stats':
+      body = <Stats iid={route.iid} />;
       break;
     case 'settings':
       body = <Settings />;
@@ -79,6 +87,7 @@ export function App() {
     <div class="shell">
       <TopBar />
       {body}
+      <DragLayer />
     </div>
   );
 }

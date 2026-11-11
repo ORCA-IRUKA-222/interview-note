@@ -7,7 +7,14 @@ import {
   createQuestion,
   descendantIds,
   emptyData,
+  insertionOrder,
+  makeAnchor,
+  moveQuestion as planMove,
+  newId,
+  nudgeQuestion as planNudge,
   remapChildAnchors,
+  remapMarks,
+  type MoveTarget,
 } from './model';
 import { mergeData, parseData } from './merge';
 import { gradeCard } from './srs';
@@ -29,13 +36,20 @@ export interface AppState {
   sync: SyncState;
   /** データが変更されるたびに増える。同期中の編集検知に使う */
   rev: number;
+  /** 質問のコピー/切り取り（貼り付け待ち）。保存はしない */
+  clipboard: Clipboard | null;
+}
+
+export interface Clipboard {
+  id: string;
+  mode: 'copy' | 'cut';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   token: '',
   gistId: '',
   autoSync: true,
-  karaoke: { sensitivity: 1, fontSize: 26, lang: 'ja-JP', autoScroll: true },
+  karaoke: { sensitivity: 1, fontSize: 26, lang: 'ja-JP', autoScroll: true, speed: 5 },
 };
 
 function read<T>(key: string): T | null {
@@ -85,6 +99,7 @@ let state: AppState = {
     lastSyncedAt: meta.lastSyncedAt ?? null,
   },
   rev: 0,
+  clipboard: null,
 };
 
 /**
@@ -240,7 +255,11 @@ export function addQuestion(
 export function updateQuestion(id: string, patch: Partial<Question>) {
   const { data } = state;
   const now = Date.now();
-  let questions = data.questions.map((q) => (q.id === id ? touch(q, patch, now) : q));
+  let questions = data.questions.map((q) => {
+    if (q.id !== id) return q;
+    const p = typeof patch.answer === 'string' && q.marks.length ? { ...patch, marks: remapMarks(patch.answer, q.marks) } : patch;
+    return touch(q, p, now);
+  });
   if (typeof patch.answer === 'string') {
     questions = remapChildAnchors(questions, id, patch.answer, now);
   }
@@ -258,9 +277,15 @@ export function deleteQuestion(id: string) {
 }
 
 /** 質問(と深掘り)を別の面接へコピーする。共通の質問を会社ごとの面接に取り込むのに使う */
-export function copyQuestionTree(sourceId: string, targetInterviewId: string, parentId: string | null = null): string {
+export function copyQuestionTree(
+  sourceId: string,
+  targetInterviewId: string,
+  parentId: string | null = null,
+  beforeId: string | null = null,
+): string {
   const { data } = state;
-  const { copies, rootId } = copySubtree(data.questions, sourceId, targetInterviewId, parentId);
+  const rootOrder = insertionOrder(data.questions, { interviewId: targetInterviewId, parentId, beforeId });
+  const { copies, rootId } = copySubtree(data.questions, sourceId, targetInterviewId, parentId, Date.now(), rootOrder);
   setData({ ...data, questions: [...data.questions, ...copies] }, { local: true });
   return rootId;
 }
@@ -287,4 +312,60 @@ export function clearLocalData() {
   setData(withCommon(emptyData()), { local: false });
   dirty = false;
   flushSave();
+}
+
+/** 質問（と深掘り）を別の位置・別の面接へ動かす。動かせない指定（自分の子孫の下など）は false */
+export function moveQuestion(id: string, target: MoveTarget): boolean {
+  const next = planMove(state.data.questions, id, target);
+  if (!next) return false;
+  setData({ ...state.data, questions: next }, { local: true });
+  return true;
+}
+
+/** 同じ親の中で 1 つ上(-1)/下(1)へ */
+export function nudgeQuestion(id: string, dir: -1 | 1): boolean {
+  const next = planNudge(state.data.questions, id, dir);
+  if (!next) return false;
+  setData({ ...state.data, questions: next }, { local: true });
+  return true;
+}
+
+export function setClipboard(clipboard: Clipboard | null) {
+  state = { ...state, clipboard };
+  emit();
+}
+
+/**
+ * コピー/切り取り中の質問を、指定の位置へ貼り付ける。切り取りは移動、コピーは複製。
+ * 戻り値は貼り付けた質問の id（できなければ null）。
+ */
+export function pasteClipboard(target: MoveTarget): string | null {
+  const clip = state.clipboard;
+  if (!clip || !state.data.questions.some((q) => q.id === clip.id)) {
+    setClipboard(null);
+    return null;
+  }
+  if (clip.mode === 'cut') {
+    if (!moveQuestion(clip.id, target)) return null;
+    setClipboard(null);
+    return clip.id;
+  }
+  return copyQuestionTree(clip.id, target.interviewId, target.parentId, target.beforeId ?? null);
+}
+
+// ---- 内容タグ ---------------------------------------------------------------
+
+/** 回答の範囲に内容タグを付ける。前後の空白は削り、同じ範囲・同じタグの重複は作らない */
+export function addMark(questionId: string, range: { start: number; end: number }, tag: string): boolean {
+  const q = state.data.questions.find((x) => x.id === questionId);
+  const a = q && makeAnchor(q.answer, range.start, range.end);
+  if (!q || !a || !tag) return false;
+  if (q.marks.some((m) => m.tag === tag && m.start === a.start && m.end === a.end)) return false;
+  updateQuestion(questionId, { marks: [...q.marks, { id: newId(), start: a.start, end: a.end, quote: a.quote, tag }] });
+  return true;
+}
+
+export function removeMark(questionId: string, markId: string) {
+  const q = state.data.questions.find((x) => x.id === questionId);
+  if (q) updateQuestion(questionId, { marks: q.marks.filter((m) => m.id !== markId) });
 }

@@ -1,4 +1,4 @@
-import type { Anchor, Data, Interview, Question } from '../types';
+import type { Anchor, Data, Interview, Mark, Question } from '../types';
 
 export function newId(): string {
   const c = globalThis.crypto;
@@ -46,6 +46,7 @@ export function createQuestion(
     answer: '',
     keyPoints: '',
     tags: [],
+    marks: [],
     status: 'todo',
     order: now,
     card: { box: 0, due: null, seen: 0 },
@@ -65,6 +66,7 @@ export function copySubtree(
   targetInterviewId: string,
   parentId: string | null = null,
   now = Date.now(),
+  rootOrder?: number,
 ): { copies: Question[]; rootId: string } {
   const ids = descendantIds(questions, sourceId);
   const byId = new Map(questions.map((q) => [q.id, q]));
@@ -79,8 +81,9 @@ export function copySubtree(
       parentId: isRoot ? parentId : (idMap.get(q.parentId ?? '') ?? null),
       anchor: isRoot ? null : q.anchor,
       tags: [...q.tags],
+      marks: q.marks.map((m) => ({ ...m, id: newId() })),
       card: { box: 0, due: null, seen: 0 },
-      order: now + index,
+      order: isRoot && rootOrder !== undefined ? rootOrder : now + index,
       createdAt: now,
       updatedAt: now,
     };
@@ -94,12 +97,9 @@ export function childrenOf(questions: Question[], interviewId: string, parentId:
     .sort(compareQuestions);
 }
 
-/** 同じ親の下では、回答内の位置（引用の先頭）→ 作成順 で並べる */
+/** 同じ親の下では order（手動で並べ替えた順。初期は作成順）で並べる */
 export function compareQuestions(a: Question, b: Question): number {
-  const pa = a.anchor && !a.anchor.broken ? a.anchor.start : Number.MAX_SAFE_INTEGER;
-  const pb = b.anchor && !b.anchor.broken ? b.anchor.start : Number.MAX_SAFE_INTEGER;
-  if (pa !== pb) return pa - pb;
-  return a.order - b.order;
+  return a.order - b.order || a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1);
 }
 
 export interface TreeRow {
@@ -234,4 +234,124 @@ export function keyPointLines(keyPoints: string): string[] {
     .split(/\r?\n/)
     .map((l) => l.replace(/^\s*([-*・●•]|\d+[.)、])\s*/, '').trim())
     .filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// 並べ替え・移動
+// ---------------------------------------------------------------------------
+
+export interface MoveTarget {
+  interviewId: string;
+  /** 移動先の親。null なら面接の直下（ルート） */
+  parentId: string | null;
+  /** この質問の直前に入れる。null/未指定なら末尾 */
+  beforeId?: string | null;
+}
+
+function orderBetween(prev: number | undefined, next: number | undefined, now: number): number {
+  if (prev === undefined && next === undefined) return now;
+  if (prev === undefined) return next! - 1000;
+  if (next === undefined) return prev + 1000;
+  return (prev + next) / 2;
+}
+
+function siblingsOf(questions: Question[], t: MoveTarget, exclude: Set<string>): Question[] {
+  return questions
+    .filter((q) => q.interviewId === t.interviewId && q.parentId === t.parentId && !exclude.has(q.id))
+    .sort(compareQuestions);
+}
+
+/** 新しく差し込む質問の order（t の位置に入れたとき、前後の間に収まる値） */
+export function insertionOrder(questions: Question[], t: MoveTarget, exclude: string[] = [], now = Date.now()): number {
+  const sibs = siblingsOf(questions, t, new Set(exclude));
+  let idx = t.beforeId ? sibs.findIndex((s) => s.id === t.beforeId) : sibs.length;
+  if (idx < 0) idx = sibs.length;
+  return orderBetween(sibs[idx - 1]?.order, sibs[idx]?.order, now);
+}
+
+/**
+ * 質問（と子孫）を別の位置へ動かす。同じ親の中での並べ替え、親の付け替え、
+ * 別の面接への移動をまとめて扱う。自分の子孫の下へは動かせない（null を返す）。
+ * 親が変わるときは、元の回答への引用(anchor)が意味を失うので外す。
+ */
+export function moveQuestion(questions: Question[], id: string, t: MoveTarget, now = Date.now()): Question[] | null {
+  const moved = questions.find((q) => q.id === id);
+  if (!moved) return null;
+  const subtree = descendantIds(questions, id);
+  const subtreeSet = new Set(subtree);
+  if (t.parentId && subtreeSet.has(t.parentId)) return null;
+  if (t.beforeId && subtreeSet.has(t.beforeId)) return null;
+
+  const sibs = siblingsOf(questions, t, subtreeSet);
+  let idx = t.beforeId ? sibs.findIndex((s) => s.id === t.beforeId) : sibs.length;
+  if (idx < 0) idx = sibs.length;
+
+  const prev = sibs[idx - 1]?.order;
+  const next = sibs[idx]?.order;
+  const orders = new Map<string, number>();
+  let order: number;
+  if (prev !== undefined && next !== undefined && next - prev < 1e-6) {
+    // 間隔が詰まりすぎたら、きょうだい全員を等間隔に振り直す
+    sibs.forEach((s, i) => orders.set(s.id, (i < idx ? i + 1 : i + 2) * 1000));
+    order = (idx + 1) * 1000;
+  } else {
+    order = orderBetween(prev, next, now);
+  }
+
+  const parentChanged = moved.parentId !== t.parentId || moved.interviewId !== t.interviewId;
+  return questions.map((q) => {
+    if (q.id === id) {
+      return { ...q, interviewId: t.interviewId, parentId: t.parentId, anchor: parentChanged ? null : q.anchor, order, updatedAt: now };
+    }
+    if (subtreeSet.has(q.id)) {
+      return q.interviewId === t.interviewId ? q : { ...q, interviewId: t.interviewId, updatedAt: now };
+    }
+    const renumbered = orders.get(q.id);
+    return renumbered === undefined ? q : { ...q, order: renumbered, updatedAt: now };
+  });
+}
+
+/** 質問を同じ親の中で 1 つ上/下へ動かす。動かせなければ null */
+export function nudgeQuestion(questions: Question[], id: string, dir: -1 | 1, now = Date.now()): Question[] | null {
+  const q = questions.find((x) => x.id === id);
+  if (!q) return null;
+  const sibs = siblingsOf(questions, { interviewId: q.interviewId, parentId: q.parentId }, new Set());
+  const i = sibs.findIndex((s) => s.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= sibs.length) return null;
+  // 上へ: 1 つ上の兄の直前 / 下へ: 1 つ下の弟の、さらに次の直前
+  const beforeId = dir < 0 ? sibs[j].id : (sibs[j + 1]?.id ?? null);
+  return moveQuestion(questions, id, { interviewId: q.interviewId, parentId: q.parentId, beforeId }, now);
+}
+
+// ---------------------------------------------------------------------------
+// 内容タグ（回答の一部に付けるタグ）
+// ---------------------------------------------------------------------------
+
+/** 内容タグを追従させる。remapAnchor と同じ規則（位置が合えばそのまま／引用を探し直す／消えたら broken） */
+export function remapMarks(newText: string, marks: Mark[]): Mark[] {
+  let changed = false;
+  const next = marks.map((m) => {
+    const r = remapAnchor(newText, { start: m.start, end: m.end, quote: m.quote, broken: m.broken });
+    if (r.start === m.start && r.end === m.end && !!r.broken === !!m.broken) return m;
+    changed = true;
+    return { ...m, start: r.start, end: r.end, broken: r.broken };
+  });
+  return changed ? next : marks;
+}
+
+/** 範囲を段落（改行区切り）の境界まで広げる */
+export function expandToParagraph(text: string, start: number, end: number): { start: number; end: number } {
+  let s = start;
+  while (s > 0 && text[s - 1] !== '\n') s--;
+  let e = end;
+  while (e < text.length && text[e] !== '\n') e++;
+  return { start: s, end: e };
+}
+
+/** タグの色相（名前から決まる。同じタグはどの画面でも同じ色） */
+export function tagHue(tag: string): number {
+  let h = 0;
+  for (const ch of tag) h = (h * 31 + ch.codePointAt(0)!) % 360;
+  return h;
 }

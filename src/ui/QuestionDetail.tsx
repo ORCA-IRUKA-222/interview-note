@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { allTags, ancestorsOf, childrenOf, interviewName, makeAnchor } from '../lib/model';
-import { addQuestion, deleteQuestion, updateQuestion, useAppState } from '../lib/store';
+import { allTags, ancestorsOf, childrenOf, expandToParagraph, interviewName, makeAnchor, normalizeTag } from '../lib/model';
+import { addMark, addQuestion, deleteQuestion, removeMark, updateQuestion, useAppState } from '../lib/store';
 import type { Question } from '../types';
-import { AutoTextarea, selectionOffsets, StatusDot, STATUS_LABEL, TagEditor } from './common';
+import { AutoTextarea, selectionOffsets, StatusDot, STATUS_LABEL, tagLine, tagTint, TagEditor } from './common';
 import { go, paths } from './router';
 
 interface Selection {
@@ -10,37 +10,56 @@ interface Selection {
   end: number;
 }
 
-/** 回答テキストを描画する。深掘りの引用箇所を強調し、タップで該当の質問に飛べる */
+/**
+ * 回答テキストを描画する。深掘りの引用箇所は黄色で強調してタップで該当の質問へ飛べ、
+ * 内容タグを付けた範囲はタグごとの色の下線で示す。
+ * （選択位置の計算のため、このコンテナの textContent は回答テキストと一致させる）
+ */
 function AnswerView(props: {
   text: string;
   anchors: { id: string; start: number; end: number }[];
+  marks: { id: string; start: number; end: number; tag: string }[];
   containerRef: { current: HTMLDivElement | null };
   onOpen(id: string): void;
 }) {
-  const { text, anchors } = props;
+  const { text, anchors, marks } = props;
   const parts = useMemo(() => {
     const cuts = new Set<number>([0, text.length]);
-    for (const a of anchors) {
-      cuts.add(Math.max(0, Math.min(a.start, text.length)));
-      cuts.add(Math.max(0, Math.min(a.end, text.length)));
+    const clamp = (n: number) => Math.max(0, Math.min(n, text.length));
+    for (const a of [...anchors, ...marks]) {
+      cuts.add(clamp(a.start));
+      cuts.add(clamp(a.end));
     }
     const sorted = [...cuts].sort((x, y) => x - y);
-    const out: { from: number; to: number; ids: string[] }[] = [];
+    const out: { from: number; to: number; ids: string[]; tags: string[] }[] = [];
     for (let i = 0; i < sorted.length - 1; i++) {
       const from = sorted[i];
       const to = sorted[i + 1];
-      out.push({ from, to, ids: anchors.filter((a) => a.start <= from && a.end >= to).map((a) => a.id) });
+      out.push({
+        from,
+        to,
+        ids: anchors.filter((a) => a.start <= from && a.end >= to).map((a) => a.id),
+        tags: [...new Set(marks.filter((m) => m.start <= from && m.end >= to).map((m) => m.tag))],
+      });
     }
     return out;
-  }, [text, anchors]);
+  }, [text, anchors, marks]);
 
   return (
     <div class="answer-view" ref={props.containerRef}>
-      {parts.map((p) =>
-        p.ids.length ? (
+      {parts.map((p) => {
+        const style = p.tags.length
+          ? {
+              background: tagTint(p.tags[0]),
+              boxShadow: p.tags.map((t, i) => `inset 0 -${3 * (i + 1)}px 0 ${tagLine(t)}`).join(', '),
+            }
+          : undefined;
+        const cls = p.tags.length ? 'tagged' : '';
+        return p.ids.length ? (
           <mark
             key={p.from}
-            class="hl"
+            class={`hl ${cls}`}
+            style={style}
             title="この部分への深掘り質問を開く"
             onClick={() => {
               // 範囲選択の操作中はジャンプしない
@@ -51,40 +70,113 @@ function AnswerView(props: {
             {text.slice(p.from, p.to)}
           </mark>
         ) : (
-          <span key={p.from}>{text.slice(p.from, p.to)}</span>
-        ),
-      )}
+          <span key={p.from} class={cls} style={style} title={p.tags.length ? p.tags.map((t) => `#${t}`).join(' ') : undefined}>
+            {text.slice(p.from, p.to)}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
-function DeepDiveBar(props: { quote: string; onCreate(text: string): void; onCancel(): void; barRef: { current: HTMLDivElement | null } }) {
+/** 選択範囲に対する操作バー: 深掘り質問を作る / 内容タグを付ける */
+function SelectionBar(props: {
+  quote: string;
+  tags: string[];
+  onDive(text: string): void;
+  onTag(tag: string, wholeParagraph: boolean): void;
+  onCancel(): void;
+  barRef: { current: HTMLDivElement | null };
+}) {
+  const [tab, setTab] = useState<'dive' | 'tag'>('dive');
   const [text, setText] = useState('');
+  const [tagDraft, setTagDraft] = useState('');
+  const [para, setPara] = useState(false);
+  const addTag = (raw: string) => {
+    const t = normalizeTag(raw);
+    if (t) props.onTag(t, para);
+  };
   return (
-    <div class="deep-bar" ref={props.barRef} role="region" aria-label="選択範囲から深掘り質問を作る">
+    <div
+      class="deep-bar"
+      ref={props.barRef}
+      role="region"
+      aria-label="選択範囲の操作"
+      // ボタンを押しても選択が外れないようにする（入力欄は除く）
+      onMouseDown={(e) => {
+        if (!(e.target as HTMLElement).closest('input')) e.preventDefault();
+      }}
+    >
       <div class="deep-quote">
         <span class="muted">選択中</span> 「{props.quote.length > 60 ? `${props.quote.slice(0, 60)}…` : props.quote}」
-      </div>
-      <form
-        class="deep-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          props.onCreate(text.trim());
-        }}
-      >
-        <input
-          value={text}
-          placeholder="ここについての深掘り質問（空でも作成可）"
-          enterkeyhint="done"
-          onInput={(e) => setText((e.target as HTMLInputElement).value)}
-        />
-        <button type="submit" class="btn primary">
-          深掘りを作る
-        </button>
-        <button type="button" class="btn" onClick={props.onCancel}>
+        <button type="button" class="icon-btn bar-close" aria-label="選択を閉じる" onClick={props.onCancel}>
           ✕
         </button>
-      </form>
+      </div>
+      <div class="seg bar-tabs">
+        <button type="button" class={tab === 'dive' ? 'on' : ''} onClick={() => setTab('dive')}>
+          深掘り質問を作る
+        </button>
+        <button type="button" class={tab === 'tag' ? 'on' : ''} onClick={() => setTab('tag')}>
+          タグを付ける
+        </button>
+      </div>
+      {tab === 'dive' ? (
+        <form
+          class="deep-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            props.onDive(text.trim());
+          }}
+        >
+          <input
+            value={text}
+            placeholder="ここについての深掘り質問（空でも作成可）"
+            enterkeyhint="done"
+            onInput={(e) => setText((e.target as HTMLInputElement).value)}
+          />
+          <button type="submit" class="btn primary">
+            深掘りを作る
+          </button>
+        </form>
+      ) : (
+        <div class="tag-pick">
+          <label class="check small">
+            <input type="checkbox" checked={para} onChange={(e) => setPara((e.target as HTMLInputElement).checked)} />
+            段落（改行まで）に広げて付ける
+          </label>
+          <div class="tags">
+            {props.tags.map((t) => (
+              <button
+                type="button"
+                class="chip tagchip"
+                key={t}
+                style={{ borderColor: tagLine(t), background: tagTint(t) }}
+                onClick={() => addTag(t)}
+              >
+                #{t}
+              </button>
+            ))}
+          </div>
+          <form
+            class="deep-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              addTag(tagDraft);
+            }}
+          >
+            <input
+              value={tagDraft}
+              placeholder="新しいタグ（例: 自己PR・志望動機・ガクチカ）"
+              enterkeyhint="done"
+              onInput={(e) => setTagDraft((e.target as HTMLInputElement).value)}
+            />
+            <button type="submit" class="btn primary" disabled={!normalizeTag(tagDraft)}>
+              付ける
+            </button>
+          </form>
+        </div>
+      )}
     </div>
   );
 }
@@ -147,6 +239,15 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
 
   const quoteFor = (s: Selection) => makeAnchor(q.answer, s.start, s.end);
   const anchor = sel ? quoteFor(sel) : null;
+
+  const tagPool = [...new Set([...tags, ...data.questions.flatMap((x) => x.marks.map((m) => m.tag))])];
+  const applyTag = (tag: string, wholeParagraph: boolean) => {
+    if (!sel) return;
+    const range = wholeParagraph ? expandToParagraph(q.answer, sel.start, sel.end) : sel;
+    addMark(q.id, range, tag);
+    window.getSelection()?.removeAllRanges();
+    setSel(null);
+  };
 
   const createDeepDive = (text: string) => {
     if (!anchor) return;
@@ -260,16 +361,43 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
             <AnswerView
               text={q.answer}
               anchors={anchors}
+              marks={q.marks.filter((m) => !m.broken)}
               containerRef={answerRef}
               onOpen={(id) => go(paths.question(q.interviewId, id))}
             />
             <p class="hint muted">
-              文字をなぞって選ぶと、そこについての深掘り質問を作れます。
+              文字をなぞって選ぶと、そこから深掘り質問を作ったり、内容タグ（自己PR・志望動機など）を付けたりできます。
               {anchors.length > 0 && '色が付いた部分は、深掘り質問のある箇所です（タップで開く）。'}
             </p>
           </>
         ) : (
           <p class="muted">回答がまだありません。「編集」から書き始めましょう。</p>
+        )}
+
+        {q.marks.length > 0 && (
+          <div class="marks-list">
+            <div class="section-head">
+              <h3>内容タグ <span class="count">{q.marks.length}</span></h3>
+              <a class="muted small" href={paths.stats(q.interviewId)}>
+                占有率を見る →
+              </a>
+            </div>
+            <ul>
+              {q.marks.map((m) => (
+                <li key={m.id}>
+                  <span class="chip tagchip" style={{ borderColor: tagLine(m.tag), background: tagTint(m.tag) }}>
+                    #{m.tag}
+                  </span>
+                  <span class={`mark-quote ${m.broken ? 'broken' : ''}`}>
+                    「{m.quote.length > 44 ? `${m.quote.slice(0, 44)}…` : m.quote}」{m.broken && '（回答から消えました）'}
+                  </span>
+                  <button type="button" class="icon-btn" aria-label={`${m.tag} のタグを外す`} onClick={() => removeMark(q.id, m.id)}>
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         <div class="section-head">
@@ -331,7 +459,16 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
         </div>
       </div>
 
-      {anchor && <DeepDiveBar quote={anchor.quote} barRef={barRef} onCreate={createDeepDive} onCancel={() => (window.getSelection()?.removeAllRanges(), setSel(null))} />}
+      {anchor && (
+        <SelectionBar
+          quote={anchor.quote}
+          tags={tagPool}
+          barRef={barRef}
+          onDive={createDeepDive}
+          onTag={applyTag}
+          onCancel={() => (window.getSelection()?.removeAllRanges(), setSel(null))}
+        />
+      )}
     </section>
   );
 }

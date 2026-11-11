@@ -30,7 +30,7 @@ describe('anchor', () => {
 });
 
 describe('tree', () => {
-  it('深掘りは回答内の位置順に並ぶ', () => {
+  it('深掘りも手動の order の順に並ぶ（回答内の位置は並びに影響しない）', () => {
     const i = createInterview({ id: 'i' });
     const root = createQuestion('i', { id: 'r', text: 'root' });
     const late = createQuestion('i', { id: 'late', parentId: 'r', anchor: { start: 20, end: 25, quote: 'x' }, order: 1 });
@@ -39,9 +39,9 @@ describe('tree', () => {
     const rows = flattenTree([grand, late, root, early], i.id);
     expect(rows.map((r) => [r.question.id, r.depth])).toEqual([
       ['r', 0],
+      ['late', 1], // order 1（引用は回答の後ろでも、order が小さければ先）
       ['early', 1],
       ['grand', 2],
-      ['late', 1],
     ]);
     expect(descendantIds([grand, late, root, early], 'r').sort()).toEqual(['early', 'grand', 'late', 'r']);
   });

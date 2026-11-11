@@ -8,6 +8,16 @@ export interface Anchor {
   broken?: boolean;
 }
 
+/** 回答の一部(段落・選択範囲)に付けた内容タグ。全体での占有率の集計に使う */
+export interface Mark {
+  id: string;
+  start: number;
+  end: number;
+  quote: string;
+  tag: string;
+  broken?: boolean;
+}
+
 export type Status = 'todo' | 'draft' | 'done';
 
 /** 単語帳（フラッシュカード）の学習状態 */
@@ -31,6 +41,8 @@ export interface Question {
   /** 話す内容の要点（単語帳の裏面に出る。1 行 1 項目） */
   keyPoints: string;
   tags: string[];
+  /** 回答の中身に付けた内容タグ */
+  marks: Mark[];
   status: Status;
   order: number;
   card: CardState;
@@ -74,5 +86,7 @@ export interface Settings {
     fontSize: number;
     lang: string;
     autoScroll: boolean;
+    /** タイマー進行の速さ（1 秒あたりの文字数） */
+    speed: number;
   };
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { TextareaHTMLAttributes } from 'preact';
-import { normalizeTag } from '../lib/model';
+import { normalizeTag, tagHue } from '../lib/model';
 import { syncNow } from '../lib/sync';
 import { useAppState } from '../lib/store';
 import { go, paths } from './router';
@@ -145,3 +145,7 @@ export function caretOffset(container: HTMLElement): number | null {
   pre.setEnd(range.startContainer, range.startOffset);
   return pre.toString().length;
 }
+
+/** タグの色（名前で決まる）。背景の薄い色と、下線・棒グラフの濃い色 */
+export const tagTint = (tag: string) => `hsl(${tagHue(tag)} 85% 55% / 0.2)`;
+export const tagLine = (tag: string) => `hsl(${tagHue(tag)} 75% 48%)`;

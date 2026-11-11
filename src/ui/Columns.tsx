@@ -6,6 +6,8 @@ import { download, toMarkdown } from '../lib/exporter';
 import { isDue, todayString } from '../lib/srs';
 import type { Interview } from '../types';
 import { StatusDot } from './common';
+import { beginDrag, useDrag } from './drag';
+import { ClipboardBar, RowMenu } from './Organize';
 import { go, paths } from './router';
 
 function InterviewRow({ i, selected }: { i: Interview; selected?: string }) {
@@ -13,8 +15,15 @@ function InterviewRow({ i, selected }: { i: Interview; selected?: string }) {
   const qs = data.questions.filter((q) => q.interviewId === i.id);
   const done = qs.filter((q) => q.status === 'done').length;
   const isCommon = i.kind === 'common';
+  const drag = useDrag();
+  const dropping = drag?.over?.kind === 'interview' && drag.over.iid === i.id;
   return (
-    <a href={paths.interview(i.id)} class={`row ${isCommon ? 'common-row' : ''} ${selected === i.id ? 'selected' : ''}`}>
+    <a
+      href={paths.interview(i.id)}
+      data-drop="interview"
+      data-iid={i.id}
+      class={`row ${isCommon ? 'common-row' : ''} ${selected === i.id ? 'selected' : ''} ${dropping ? 'drop-into' : ''}`}
+    >
       <span class="row-main">
         <strong>{isCommon ? '📌 共通' : interviewName(i)}</strong>
         {!isCommon && i.company && i.title && <span class="muted"> {i.title}</span>}
@@ -144,7 +153,8 @@ function CommonSearch({ iid }: { iid: string }) {
 }
 
 export function QuestionTree({ iid, selected }: { iid: string; selected?: string }) {
-  const { data } = useAppState();
+  const { data, clipboard } = useAppState();
+  const drag = useDrag();
   const interview = data.interviews.find((i) => i.id === iid);
   const [draft, setDraft] = useState('');
   const [editing, setEditing] = useState(() => !!interview && interview.kind !== 'common' && !interview.company && !interview.title);
@@ -316,23 +326,51 @@ export function QuestionTree({ iid, selected }: { iid: string; selected?: string
           </div>
         )}
 
+        <ClipboardBar iid={iid} />
+
         <ul class="tree">
           {rows.map(({ question: q, depth }) => {
             const kids = childrenOf(data.questions, iid, q.id).length;
+            const over = drag?.over?.kind === 'row' && drag.over.qid === q.id ? drag.over.pos : null;
             return (
               <li key={q.id} style={{ '--depth': depth }}>
-                <a href={paths.question(iid, q.id)} class={`row tree-row ${selected === q.id ? 'selected' : ''}`}>
-                  <StatusDot status={q.status} />
-                  <span class="tree-text">
-                    {depth > 0 && <span class="branch" aria-hidden="true">↳ </span>}
-                    {q.text || '(質問未入力)'}
+                <div
+                  class={`tree-item ${over ? `drop-${over}` : ''} ${drag?.id === q.id ? 'dragging' : ''} ${clipboard?.id === q.id ? `clipped-${clipboard.mode}` : ''}`}
+                  data-drop="row"
+                  data-qid={q.id}
+                  data-iid={iid}
+                >
+                  <span
+                    class="drag-handle"
+                    role="button"
+                    aria-label="つかんで移動（Ctrl/Alt を押しながらでコピー）"
+                    title="ドラッグで並べ替え・移動（Ctrl/Alt を押しながらでコピー）"
+                    onPointerDown={(e) => beginDrag(e as unknown as PointerEvent, { id: q.id, text: q.text })}
+                  >
+                    ⋮⋮
                   </span>
-                  {kids > 0 && <span class="count" title="深掘り質問の数">{kids}</span>}
-                </a>
+                  <a href={paths.question(iid, q.id)} class={`row tree-row ${selected === q.id ? 'selected' : ''}`}>
+                    <StatusDot status={q.status} />
+                    <span class="tree-text">
+                      {depth > 0 && <span class="branch" aria-hidden="true">↳ </span>}
+                      {q.text || '(質問未入力)'}
+                    </span>
+                    {kids > 0 && <span class="count" title="深掘り質問の数">{kids}</span>}
+                  </a>
+                  <RowMenu q={q} />
+                </div>
               </li>
             );
           })}
         </ul>
+        <div
+          class={`tree-end ${drag?.over?.kind === 'tree-end' ? 'drop-into' : ''}`}
+          data-drop="tree-end"
+          data-iid={iid}
+          aria-hidden="true"
+        >
+          {drag ? 'ここにドロップで末尾へ' : ''}
+        </div>
       </div>
     </section>
   );

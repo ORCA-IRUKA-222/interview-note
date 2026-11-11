@@ -18,6 +18,8 @@ export function Karaoke({ qid }: { qid: string }) {
   const [boundary, setBoundary] = useState(0);
   const [heard, setHeard] = useState('');
   const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState<string>('');
+  const [mode, setMode] = useState<'voice' | 'timer'>('voice');
   const textRef = useRef<HTMLDivElement>(null);
   const supported = speechSupported();
 
@@ -58,7 +60,10 @@ export function Karaoke({ qid }: { qid: string }) {
         setHeard(buffer.current.current().slice(-60));
       },
       onRunning: setRunning,
-      onError: setError,
+      onError: (message, code) => {
+        setError(message);
+        setErrorCode(code ?? '');
+      },
     });
     return () => recognizer.current?.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -67,6 +72,28 @@ export function Karaoke({ qid }: { qid: string }) {
   useEffect(() => {
     recognizer.current?.setLang(cfg.lang);
   }, [cfg.lang]);
+
+  // タイマーモード: 設定した速さ（1 秒あたりの文字数）で一定に進める。音声認識が使えない環境の代わり
+  useEffect(() => {
+    if (!running || mode !== 'timer') return;
+    let acc = 0;
+    const id = setInterval(() => {
+      const a = aligner.current;
+      if (!a || a.isFinished) {
+        setRunning(false);
+        return;
+      }
+      acc += cfg.speed * 0.1;
+      const steps = Math.floor(acc);
+      if (steps < 1) return;
+      acc -= steps;
+      a.cursor = Math.min(a.totalUnits, a.cursor + steps);
+      sync();
+      if (a.isFinished) setRunning(false);
+    }, 100);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, mode, cfg.speed]);
 
   // 発表中に画面が消えないようにする
   useEffect(() => {
@@ -121,11 +148,25 @@ export function Karaoke({ qid }: { qid: string }) {
 
   const toggle = () => {
     setError('');
+    setErrorCode('');
+    if (mode === 'timer') {
+      setRunning(!running);
+      return;
+    }
     if (running) recognizer.current?.stop();
     else {
       buffer.current.clear();
       recognizer.current?.start();
     }
+  };
+
+  const switchMode = (next: 'voice' | 'timer') => {
+    if (next === mode) return;
+    recognizer.current?.stop();
+    setRunning(false);
+    setError('');
+    setErrorCode('');
+    setMode(next);
   };
 
   const progress = Math.round((aligner.current?.progress() ?? 0) * 100);
@@ -141,6 +182,14 @@ export function Karaoke({ qid }: { qid: string }) {
       </div>
 
       <div class="k-tools">
+        <div class="seg" role="group" aria-label="進め方">
+          <button type="button" class={mode === 'voice' ? 'on' : ''} onClick={() => switchMode('voice')}>
+            🎤 音声で進める
+          </button>
+          <button type="button" class={mode === 'timer' ? 'on' : ''} onClick={() => switchMode('timer')}>
+            ⏱ タイマーで進める
+          </button>
+        </div>
         {hasPoints && (
           <div class="seg">
             <button type="button" class={source === 'answer' ? 'on' : ''} onClick={() => (setSource('answer'), seek(0))}>
@@ -178,12 +227,44 @@ export function Karaoke({ qid }: { qid: string }) {
         </label>
       </div>
 
-      {!supported && (
+      {mode === 'voice' && !supported && (
         <p class="notice">
-          このブラウザは音声認識に対応していません。Chrome / Edge（PC・Android）でお試しください。下のボタンで手動送りはできます。
+          このブラウザは音声認識に対応していません。Chrome / Edge（PC・Android）でお試しいただくか、「タイマーで進める」を使ってください。
         </p>
       )}
-      {error && <p class="notice error">{error}</p>}
+      {mode === 'timer' && (
+        <div class="k-speed">
+          <span class="small">速さ</span>
+          <button type="button" class="btn" aria-label="遅くする" onClick={() => updateSettings({ karaoke: { ...cfg, speed: Math.max(2, cfg.speed - 1) } })}>
+            −
+          </button>
+          <strong>{cfg.speed} 文字/秒</strong>
+          <button type="button" class="btn" aria-label="速くする" onClick={() => updateSettings({ karaoke: { ...cfg, speed: Math.min(14, cfg.speed + 1) } })}>
+            ＋
+          </button>
+          <span class="muted small">（約 {cfg.speed * 60} 文字/分。ゆっくり話すなら 4〜5、早口なら 7 以上）</span>
+        </div>
+      )}
+      {error && mode === 'voice' && (
+        <div class="notice error">
+          <p>{error}</p>
+          {errorCode === 'network' && (
+            <>
+              <p class="small">
+                音声認識は、ブラウザが Google の音声認識サーバーに音声を送って行います。届かない主な原因は次のとおりです。
+              </p>
+              <ul class="small">
+                <li>通信が不安定、または VPN・プライベート DNS・広告ブロックなどで Google への通信が止められている（Wi-Fi とモバイル回線を切り替えて試す）</li>
+                <li>Android: 設定 → アプリ →「Google」を開き、マイクの権限と更新を確認する。Gboard の音声入力が動くかも目安になる</li>
+                <li>Chrome / Edge 以外のブラウザ（Brave・Firefox・アプリ内ブラウザなど）は、音声認識が使えないことがある</li>
+              </ul>
+            </>
+          )}
+          <button type="button" class="btn" onClick={() => switchMode('timer')}>
+            ⏱ 音声を使わず、タイマーで進める
+          </button>
+        </div>
+      )}
 
       {text.trim() ? (
         <div
@@ -211,14 +292,14 @@ export function Karaoke({ qid }: { qid: string }) {
             <span style={{ width: `${progress}%` }} />
           </span>
           <span class="small">{finished ? '読み終わり 🎉' : `${progress}%`}</span>
-          {running && heard && <span class="heard muted small">🎙 {heard}</span>}
+          {running && mode === 'voice' && heard && <span class="heard muted small">🎙 {heard}</span>}
         </div>
         <div class="k-controls">
           <button type="button" class="btn" aria-label="1 文戻る" onClick={() => seek(previousBoundary(sentences, boundary))}>
             ◀ 文
           </button>
-          <button type="button" class={`btn big ${running ? 'danger' : 'primary'}`} disabled={!supported || !text.trim()} onClick={toggle}>
-            {running ? '■ 一時停止' : '🎤 開始'}
+          <button type="button" class={`btn big ${running ? 'danger' : 'primary'}`} disabled={(mode === 'voice' && !supported) || !text.trim()} onClick={toggle}>
+            {running ? '■ 一時停止' : mode === 'timer' ? '▶ 開始' : '🎤 開始'}
           </button>
           <button type="button" class="btn" aria-label="1 文進む" onClick={() => seek(sentenceEnd(sentences, boundary))}>
             文 ▶

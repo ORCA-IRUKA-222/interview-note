@@ -31,7 +31,7 @@ export function search(data: Data, query: string, tag?: string, opts: { intervie
       ['text', q.text],
       ['answer', q.answer],
       ['keyPoints', q.keyPoints],
-      ['tags', q.tags.join(' ')],
+      ['tags', [...q.tags, ...q.marks.map((m) => m.tag)].join(' ')],
       ['interview', `${interviewName(interview, '')} ${interview.title}`],
     ];
     const normalized = fields.map(([f, s]) => [f, s, normalize(s)] as const);

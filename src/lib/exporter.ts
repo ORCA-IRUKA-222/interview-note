@@ -35,6 +35,9 @@ function interviewMarkdown(interview: Interview, questions: Question[]): string 
       lines.push('', `> 深掘り元 Q${parentLabel ?? '?'}: 「${q.anchor.quote}」`);
     }
     if (q.answer.trim()) lines.push('', q.answer.trim());
+    if (q.marks.length) {
+      lines.push('', '**内容タグ**', '', ...q.marks.filter((m) => !m.broken).map((m) => `- #${m.tag} 「${m.quote.replace(/\s+/g, ' ')}」`));
+    }
     const points = keyPointLines(q.keyPoints);
     if (points.length) {
       lines.push('', '**話す要点**', '', ...points.map((p) => `- ${p}`));

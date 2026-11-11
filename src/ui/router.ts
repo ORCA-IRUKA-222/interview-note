@@ -7,6 +7,7 @@ export type Route =
   | { name: 'study'; iid?: string; tag?: string }
   | { name: 'karaoke'; qid: string }
   | { name: 'search'; q: string; tag?: string }
+  | { name: 'stats'; iid?: string }
   | { name: 'settings' };
 
 export const paths = {
@@ -29,6 +30,7 @@ export const paths = {
     return `#/search${s ? `?${s}` : ''}`;
   },
   settings: '#/settings',
+  stats: (iid?: string) => (iid ? `#/stats?i=${iid}` : '#/stats'),
 };
 
 export function parseRoute(hash: string): Route {
@@ -42,6 +44,7 @@ export function parseRoute(hash: string): Route {
   if (seg[0] === 'study') return { name: 'study', iid: params.get('i') ?? undefined, tag: params.get('tag') ?? undefined };
   if (seg[0] === 'karaoke' && seg[1]) return { name: 'karaoke', qid: seg[1] };
   if (seg[0] === 'search') return { name: 'search', q: params.get('q') ?? '', tag: params.get('tag') ?? undefined };
+  if (seg[0] === 'stats') return { name: 'stats', iid: params.get('i') ?? undefined };
   if (seg[0] === 'settings') return { name: 'settings' };
   return { name: 'home' };
 }
