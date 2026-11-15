@@ -77,23 +77,59 @@ function overAt(x: number, y: number, draggedId: string): Over {
   return null;
 }
 
-/** ハンドルの pointerdown から呼ぶ。以降の移動・離す操作は window で拾う */
-export function beginDrag(e: PointerEvent, item: { id: string; text: string }) {
-  if (e.button !== undefined && e.button > 0) return;
-  e.preventDefault();
-  drag = { id: item.id, text: item.text, x: e.clientX, y: e.clientY, copy: e.ctrlKey || e.altKey || e.metaKey, over: null };
-  document.body.classList.add('is-dragging');
-  emit();
+export function isDragging(): boolean {
+  return drag !== null;
+}
 
+/** 長押しで持ち上げるまでの時間(ms)と、その間に指が動いてもよい距離(px)。動いたらスクロールとみなす */
+const LONG_PRESS_MS = 380;
+const TOUCH_SLOP = 10;
+/** マウスは、これだけ動いたらドラッグ開始（クリックと区別する） */
+const MOUSE_THRESHOLD = 5;
+
+export interface PressOptions {
+  /** true なら押した瞬間につかむ（つかみ口の「⋮⋮」用）。false なら、マウスは少し動かしたら／タッチは長押しでつかむ */
+  immediate?: boolean;
+}
+
+/**
+ * 質問の行・つかみ口の pointerdown から呼ぶ。
+ *  - マウス: 行を押したまま少し動かすとドラッグ開始。動かさずに離せば通常のクリック
+ *  - タッチ: 行を長押し（約 0.4 秒）で持ち上がる。その前に指が動けばスクロールとして扱う
+ *  - つかみ口(immediate): 押した瞬間につかむ
+ */
+export function pressStart(e: PointerEvent, item: { id: string; text: string }, opts: PressOptions = {}) {
+  if (drag) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  const touch = e.pointerType !== 'mouse';
+  const startX = e.clientX;
+  const startY = e.clientY;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let raf = 0;
+  let lifted = false;
+
+  const lift = (x: number, y: number, ctrl: boolean) => {
+    lifted = true;
+    drag = { id: item.id, text: item.text, x, y, copy: ctrl, over: overAt(x, y, item.id) };
+    document.body.classList.add('is-dragging');
+    // 持ち上がったことを手応えで伝える（対応端末のみ）
+    if (touch && !opts.immediate) navigator.vibrate?.(18);
+    emit();
+    raf = requestAnimationFrame(autoScroll);
+  };
+
   const autoScroll = () => {
     if (!drag) return;
     const scroller = document.querySelector<HTMLElement>('.col-tree .col-body');
     if (scroller) {
       const r = scroller.getBoundingClientRect();
       const edge = 56;
+      // スマホでは画面下に会社名のドロップ先の帯が出るので、スクロールの下端はその上端を基準にする
+      // （帯の上にいるときは「会社へ落とす」操作なのでスクロールしない）
+      const dockTop = document.querySelector('.drop-dock')?.getBoundingClientRect().top;
+      const bottom = dockTop ?? r.bottom;
       if (drag.y < r.top + edge) scroller.scrollTop -= 14;
-      else if (drag.y > r.bottom - edge) scroller.scrollTop += 14;
+      else if (drag.y > bottom - edge && (dockTop === undefined || drag.y < dockTop)) scroller.scrollTop += 14;
       // スクロールした分だけドロップ先を取り直す
       const over = overAt(drag.x, drag.y, drag.id);
       if (JSON.stringify(over) !== JSON.stringify(drag.over)) {
@@ -103,33 +139,90 @@ export function beginDrag(e: PointerEvent, item: { id: string; text: string }) {
     }
     raf = requestAnimationFrame(autoScroll);
   };
-  raf = requestAnimationFrame(autoScroll);
 
-  const move = (ev: PointerEvent) => {
-    if (!drag) return;
-    drag = { ...drag, x: ev.clientX, y: ev.clientY, copy: ev.ctrlKey || ev.altKey || ev.metaKey, over: overAt(ev.clientX, ev.clientY, drag.id) };
-    emit();
-  };
-
-  const finish = (ev: PointerEvent, commit: boolean) => {
+  const cleanup = () => {
+    clearTimeout(timer);
+    cancelAnimationFrame(raf);
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', cancel);
-    cancelAnimationFrame(raf);
-    const current = drag;
-    drag = null;
-    document.body.classList.remove('is-dragging');
+    if (lifted) {
+      drag = null;
+      document.body.classList.remove('is-dragging');
+      emit();
+    }
+  };
+
+  function move(ev: PointerEvent) {
+    const dist = Math.hypot(ev.clientX - startX, ev.clientY - startY);
+    if (!lifted) {
+      if (touch) {
+        // 長押しの前に動いた = スクロールしたいので、つかむのをやめる
+        if (dist > TOUCH_SLOP) cleanup();
+        return;
+      }
+      if (dist < MOUSE_THRESHOLD) return;
+      lift(ev.clientX, ev.clientY, ev.ctrlKey || ev.altKey || ev.metaKey);
+      return;
+    }
+    if (!drag) return;
+    drag = { ...drag, x: ev.clientX, y: ev.clientY, copy: ev.ctrlKey || ev.altKey || ev.metaKey, over: overAt(ev.clientX, ev.clientY, drag.id) };
     emit();
-    if (!commit || !current) return;
+  }
+
+  function up(ev: PointerEvent) {
+    const wasLifted = lifted;
+    const current = drag;
+    cleanup();
+    if (!wasLifted || !current) return;
+    // 離した操作そのものが出すクリック（pointerup の直後 ~数ms）だけを止め、リンクが開かないようにする。
+    // 時刻で見分けるので、その後の正当なクリックは通る
+    const upTime = ev.timeStamp;
+    const stop = (c: Event) => {
+      if (c.timeStamp - upTime > 30) return;
+      c.stopPropagation();
+      c.preventDefault();
+    };
+    window.addEventListener('click', stop, true);
+    setTimeout(() => window.removeEventListener('click', stop, true), 80);
+
     const target = resolveTarget(overAt(ev.clientX, ev.clientY, current.id), current.id);
     if (!target) return;
-    const copy = ev.ctrlKey || ev.altKey || ev.metaKey;
-    if (copy) copyQuestionTree(current.id, target.interviewId, target.parentId, target.beforeId ?? null);
+    if (ev.ctrlKey || ev.altKey || ev.metaKey) copyQuestionTree(current.id, target.interviewId, target.parentId, target.beforeId ?? null);
     else moveQuestion(current.id, target);
-  };
-  const up = (ev: PointerEvent) => finish(ev, true);
-  const cancel = (ev: PointerEvent) => finish(ev, false);
+  }
+
+  function cancel() {
+    cleanup();
+  }
+
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
   window.addEventListener('pointercancel', cancel);
+
+  if (opts.immediate) {
+    e.preventDefault();
+    lift(startX, startY, e.ctrlKey || e.altKey || e.metaKey);
+  } else if (touch) {
+    timer = setTimeout(() => lift(startX, startY, false), LONG_PRESS_MS);
+  }
+}
+
+const guarded = new WeakSet<Element>();
+
+/**
+ * 質問ツリーの ref に渡す。ドラッグ中だけタッチの移動でページがスクロールしないようにする。
+ * （touchmove を preventDefault できるのは「最初から非パッシブで登録されている」リスナーだけなので、
+ *   ツリーの描画時に一度だけ登録しておく）
+ */
+export function guardTouchScroll(el: Element | null) {
+  if (!el || guarded.has(el)) return;
+  guarded.add(el);
+  el.addEventListener(
+    'touchmove',
+    (e) => {
+      if (isDragging() && e.cancelable) e.preventDefault();
+    },
+    { passive: false },
+  );
 }

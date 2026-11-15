@@ -15,15 +15,37 @@ import { go, paths } from './router';
 
 const ellipsis = (s: string, n = 28) => (s.length > n ? `${s.slice(0, n)}…` : s || '(質問未入力)');
 
-/** ドラッグ中に指に付いてくる表示 */
+/** ドラッグ中に指に付いてくる表示。画面が狭く会社の一覧が見えないときは、下に会社名のドロップ先を出す */
 export function DragLayer() {
   const drag = useDrag();
+  const { data } = useAppState();
   if (!drag) return null;
+  const narrow = window.innerWidth < 900;
+  const interviews = [...data.interviews].sort((a, b) => (a.id === COMMON_ID ? -1 : b.id === COMMON_ID ? 1 : 0));
   return (
-    <div class="drag-ghost" style={{ left: `${drag.x + 12}px`, top: `${drag.y + 12}px` }} aria-hidden="true">
-      {drag.copy && <span class="ghost-copy">＋コピー</span>}
-      {ellipsis(drag.text)}
-    </div>
+    <>
+      {narrow && (
+        <div class="drop-dock" aria-hidden="true">
+          <span class="dock-label">ここに落とすと別の面接へ移動</span>
+          <div class="dock-chips">
+            {interviews.map((i) => (
+              <span
+                key={i.id}
+                data-drop="interview"
+                data-iid={i.id}
+                class={`dock-chip ${drag.over?.kind === 'interview' && drag.over.iid === i.id ? 'drop-into' : ''}`}
+              >
+                {i.kind === 'common' ? '📌 共通' : interviewName(i, '(無題)')}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div class="drag-ghost" style={{ left: `${drag.x + 12}px`, top: `${drag.y - 44}px` }} aria-hidden="true">
+        {drag.copy && <span class="ghost-copy">＋コピー</span>}
+        {ellipsis(drag.text)}
+      </div>
+    </>
   );
 }
 

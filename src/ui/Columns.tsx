@@ -6,7 +6,7 @@ import { download, toMarkdown } from '../lib/exporter';
 import { isDue, todayString } from '../lib/srs';
 import type { Interview } from '../types';
 import { StatusDot } from './common';
-import { beginDrag, useDrag } from './drag';
+import { guardTouchScroll, pressStart, useDrag } from './drag';
 import { ClipboardBar, RowMenu } from './Organize';
 import { go, paths } from './router';
 
@@ -328,7 +328,12 @@ export function QuestionTree({ iid, selected }: { iid: string; selected?: string
 
         <ClipboardBar iid={iid} />
 
-        <ul class="tree">
+        {rows.length > 1 && (
+          <p class="drag-hint muted small">
+            ↕ 質問をドラッグ（スマホは<strong>長押し</strong>）で並べ替え。別の会社の行や、下に出る会社名へ落とすと移動できます。
+          </p>
+        )}
+        <ul class="tree" ref={guardTouchScroll}>
           {rows.map(({ question: q, depth }) => {
             const kids = childrenOf(data.questions, iid, q.id).length;
             const over = drag?.over?.kind === 'row' && drag.over.qid === q.id ? drag.over.pos : null;
@@ -339,17 +344,31 @@ export function QuestionTree({ iid, selected }: { iid: string; selected?: string
                   data-drop="row"
                   data-qid={q.id}
                   data-iid={iid}
+                  // 行のどこを押しても動かせる（つかみ口・メニューボタンは個別に処理）
+                  onPointerDown={(e) => {
+                    if ((e.target as HTMLElement).closest('.row-menu-btn, .row-menu, .drag-handle')) return;
+                    pressStart(e as unknown as PointerEvent, { id: q.id, text: q.text });
+                  }}
+                  // スマホの長押しで出るメニュー（コピー・共有など）を出さない
+                  onContextMenu={(e) => {
+                    if (window.matchMedia('(pointer: coarse)').matches) e.preventDefault();
+                  }}
                 >
                   <span
                     class="drag-handle"
                     role="button"
                     aria-label="つかんで移動（Ctrl/Alt を押しながらでコピー）"
-                    title="ドラッグで並べ替え・移動（Ctrl/Alt を押しながらでコピー）"
-                    onPointerDown={(e) => beginDrag(e as unknown as PointerEvent, { id: q.id, text: q.text })}
+                    title="つかんで移動（行そのものをドラッグ／長押しでも動かせます）"
+                    onPointerDown={(e) => pressStart(e as unknown as PointerEvent, { id: q.id, text: q.text }, { immediate: true })}
                   >
                     ⋮⋮
                   </span>
-                  <a href={paths.question(iid, q.id)} class={`row tree-row ${selected === q.id ? 'selected' : ''}`}>
+                  <a
+                    href={paths.question(iid, q.id)}
+                    draggable={false}
+                    onDragStart={(e) => e.preventDefault()}
+                    class={`row tree-row ${selected === q.id ? 'selected' : ''}`}
+                  >
                     <StatusDot status={q.status} />
                     <span class="tree-text">
                       {depth > 0 && <span class="branch" aria-hidden="true">↳ </span>}
