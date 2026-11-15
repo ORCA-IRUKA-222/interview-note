@@ -20,8 +20,20 @@ export function Karaoke({ qid }: { qid: string }) {
   const [error, setError] = useState('');
   const [errorCode, setErrorCode] = useState<string>('');
   const [mode, setMode] = useState<'voice' | 'timer'>('voice');
+  const [brave, setBrave] = useState(false);
   const textRef = useRef<HTMLDivElement>(null);
   const supported = speechSupported();
+
+  // Brave は音声認識に使う Google のサーバーへの通信を標準で止めており、シールドを切っても使えない。
+  // 分かった時点で理由を伝え、最初からタイマーモードにする
+  useEffect(() => {
+    const b = (navigator as Navigator & { brave?: { isBrave?: () => Promise<boolean> } }).brave;
+    b?.isBrave?.().then((yes) => {
+      if (!yes) return;
+      setBrave(true);
+      setMode('timer');
+    });
+  }, []);
 
   const text = q ? (source === 'keyPoints' ? q.keyPoints : q.answer) : '';
   const cfg = settings.karaoke;
@@ -227,6 +239,32 @@ export function Karaoke({ qid }: { qid: string }) {
         </label>
       </div>
 
+      {brave && (
+        <div class="notice">
+          <p>
+            <strong>お使いの Brave では、音声で進める機能は使えません。</strong>
+            Brave は、音声認識に使う Google のサーバーへの通信を標準で止めています（シールドをオフにしても同じです）。
+            音声で進めたいときは <strong>Chrome か Edge</strong> で開いてください。このままでも「タイマーで進める」は使えます。
+          </p>
+          <div class="form-actions">
+            {/Android/i.test(navigator.userAgent) && (
+              <a
+                class="btn"
+                href={`intent://${location.host}${location.pathname}?r=${encodeURIComponent(location.hash.replace(/^#/, ''))}#Intent;scheme=https;package=com.android.chrome;end`}
+              >
+                Chrome で開く
+              </a>
+            )}
+            <button
+              type="button"
+              class="btn"
+              onClick={() => void navigator.clipboard?.writeText(location.href).catch(() => undefined)}
+            >
+              この画面の URL をコピー
+            </button>
+          </div>
+        </div>
+      )}
       {mode === 'voice' && !supported && (
         <p class="notice">
           このブラウザは音声認識に対応していません。Chrome / Edge（PC・Android）でお試しいただくか、「タイマーで進める」を使ってください。

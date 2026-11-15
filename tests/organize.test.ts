@@ -14,7 +14,7 @@ import {
   tagHue,
 } from '../src/lib/model';
 import { parseData, serialize } from '../src/lib/merge';
-import { computeShare } from '../src/lib/stats';
+import { computeShares, shareOfQuestion } from '../src/lib/stats';
 import { toMarkdown } from '../src/lib/exporter';
 import { search } from '../src/lib/search';
 import type { Question } from '../src/types';
@@ -130,36 +130,76 @@ describe('内容タグ', () => {
   });
 });
 
-describe('占有率', () => {
-  it('タグごとの割合と未分類を出す（空白・改行は数えない、重なりは 1 回）', () => {
-    const answer = 'ABCDE FGHIJ\nKLMNO PQRST'; // 空白を除くと 20 文字
-    const qs = [
+describe('占有率（質問ごと）', () => {
+  const answer = 'ABCDE FGHIJ\nKLMNO PQRST'; // 空白・改行を除くと 20 文字
+
+  it('分母はその質問の回答。割合と未分類の合計は 100%', () => {
+    const s = shareOfQuestion(
       q('1', 1, {
         answer,
         marks: [
           { id: 'a', start: 0, end: 5, quote: 'ABCDE', tag: '自己PR' }, // 5
           { id: 'b', start: 6, end: 11, quote: 'FGHIJ', tag: '志望動機' }, // 5
-          { id: 'c', start: 0, end: 3, quote: 'ABC', tag: '志望動機' }, // 重なり: 志望動機は +3
-          { id: 'd', start: 0, end: 3, quote: 'ABC', tag: '志望動機' }, // 同じ範囲を二重に付けても増えない
         ],
       }),
-      q('2', 2, { answer: '', marks: [] }),
-    ];
-    const r = computeShare(qs);
-    expect(r.total).toBe(20);
-    expect(r.questions).toBe(1);
-    const get = (t: string) => r.tags.find((x) => x.tag === t)!;
-    expect(get('自己PR')).toMatchObject({ chars: 5, ratio: 0.25 });
-    expect(get('志望動機')).toMatchObject({ chars: 8, ratio: 0.4 });
-    expect(r.untagged).toBe(10); // KLMNOPQRST
-    expect(r.tags.map((t) => t.tag)).toEqual(['志望動機', '自己PR']);
+    )!;
+    expect(s.total).toBe(20);
+    expect(s.untagged).toBe(10);
+    // 同じ割合のときは五十音順
+    expect(s.tags).toEqual([
+      { tag: '志望動機', chars: 5, ratio: 0.25 },
+      { tag: '自己PR', chars: 5, ratio: 0.25 },
+    ]);
+    const sum = s.tags.reduce((n, t) => n + t.ratio, 0) + s.untagged / s.total;
+    expect(sum).toBeCloseTo(1, 10);
   });
 
-  it('broken な内容タグと、回答のない質問は数えない', () => {
-    const r = computeShare([q('1', 1, { answer: 'あいう', marks: [{ id: 'a', start: 0, end: 2, quote: 'あい', tag: 'X', broken: true }] })]);
-    expect(r.tags).toEqual([]);
-    expect(r.untagged).toBe(3);
-    expect(computeShare([])).toMatchObject({ total: 0, untagged: 0, tags: [] });
+  it('重なったら範囲の短い（細かい）タグが優先され、二重に数えない', () => {
+    const s = shareOfQuestion(
+      q('1', 1, {
+        answer,
+        marks: [
+          { id: 'wide', start: 0, end: 11, quote: 'ABCDE FGHIJ', tag: '全体' }, // 空白を除いて 10 文字
+          { id: 'inner', start: 0, end: 3, quote: 'ABC', tag: '細部' }, // 3 文字（全体の中）
+        ],
+      }),
+    )!;
+    const get = (t: string) => s.tags.find((x) => x.tag === t)!;
+    expect(get('細部').chars).toBe(3);
+    expect(get('全体').chars).toBe(7); // 10 - 3
+    expect(s.untagged).toBe(10);
+    // 同じ範囲を二重に付けても、同じタグなら増えない
+    const dup = shareOfQuestion(
+      q('1', 1, {
+        answer,
+        marks: [
+          { id: 'a', start: 0, end: 3, quote: 'ABC', tag: 'X' },
+          { id: 'b', start: 0, end: 3, quote: 'ABC', tag: 'X' },
+        ],
+      }),
+    )!;
+    expect(dup.tags).toEqual([{ tag: 'X', chars: 3, ratio: 3 / 20 }]);
+  });
+
+  it('同じ長さで重なれば、後から付けたタグが優先される', () => {
+    const s = shareOfQuestion(
+      q('1', 1, {
+        answer,
+        marks: [
+          { id: 'a', start: 0, end: 5, quote: 'ABCDE', tag: '先' },
+          { id: 'b', start: 0, end: 5, quote: 'ABCDE', tag: '後' },
+        ],
+      }),
+    )!;
+    expect(s.tags.map((t) => t.tag)).toEqual(['後']);
+  });
+
+  it('broken な内容タグは数えない。回答のない質問は対象外', () => {
+    const s = shareOfQuestion(q('1', 1, { answer: 'あいう', marks: [{ id: 'a', start: 0, end: 2, quote: 'あい', tag: 'X', broken: true }] }))!;
+    expect(s.tags).toEqual([]);
+    expect(s.untagged).toBe(3);
+    expect(shareOfQuestion(q('2', 2, { answer: '  \n ' }))).toBeNull();
+    expect(computeShares([q('3', 3, { answer: '' }), q('4', 4, { answer: 'あ' })]).map((x) => x.questionId)).toEqual(['4']);
   });
 });
 

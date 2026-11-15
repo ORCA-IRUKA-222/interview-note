@@ -149,3 +149,49 @@ export function caretOffset(container: HTMLElement): number | null {
 /** タグの色（名前で決まる）。背景の薄い色と、下線・棒グラフの濃い色 */
 export const tagTint = (tag: string) => `hsl(${tagHue(tag)} 85% 55% / 0.2)`;
 export const tagLine = (tag: string) => `hsl(${tagHue(tag)} 75% 48%)`;
+
+const pct = (r: number) => `${(r * 100).toFixed(r > 0 && r < 0.1 ? 1 : 0)}%`;
+export { pct };
+
+/**
+ * 1 つの質問の占有率: 横に並んだ積み上げ棒（タグの色）と、タグ名つきの凡例。
+ * 1 文字は 1 つのタグにだけ数えるので、棒と凡例の合計は 100%。
+ */
+export function ShareBar({
+  share,
+  highlight,
+}: {
+  share: { total: number; untagged: number; tags: { tag: string; chars: number; ratio: number }[] };
+  highlight?: string;
+}) {
+  const label = [...share.tags.map((t) => `${t.tag} ${pct(t.ratio)}`), `未分類 ${pct(share.untagged / share.total)}`].join('、');
+  return (
+    <div class="sharebox">
+      <div class="sharebar" role="img" aria-label={label}>
+        {share.tags.map((t) => (
+          <span
+            key={t.tag}
+            class={highlight && t.tag !== highlight ? 'dim' : ''}
+            style={{ width: `${t.ratio * 100}%`, background: tagLine(t.tag) }}
+            title={`${t.tag} ${pct(t.ratio)}（${t.chars} 字）`}
+          />
+        ))}
+        {share.untagged > 0 && <span class="untagged" style={{ width: `${(share.untagged / share.total) * 100}%` }} title={`未分類 ${pct(share.untagged / share.total)}`} />}
+      </div>
+      <ul class="share-legend">
+        {share.tags.map((t) => (
+          <li key={t.tag} class={highlight && t.tag === highlight ? 'hot' : ''}>
+            <span class="swatch" style={{ background: tagLine(t.tag) }} />
+            #{t.tag} <strong>{pct(t.ratio)}</strong>
+          </li>
+        ))}
+        {share.untagged > 0 && (
+          <li class="muted">
+            <span class="swatch untagged" />
+            未分類 <strong>{pct(share.untagged / share.total)}</strong>
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}

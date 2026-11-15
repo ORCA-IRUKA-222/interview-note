@@ -1,72 +1,70 @@
 import type { Question } from '../types';
 
-export interface TagShare {
+export interface TagRatio {
   tag: string;
-  /** そのタグが付いた文字数（空白・改行を除く。重なりは 1 回だけ数える） */
+  /** そのタグに数えた文字数（空白・改行を除く） */
   chars: number;
-  /** 全体の文字数に対する割合 (0..1) */
+  /** その質問の回答の総文字数に対する割合 (0..1) */
   ratio: number;
-  passages: { questionId: string; quote: string }[];
 }
 
-export interface ShareResult {
-  /** 集計した回答の総文字数（空白・改行を除く） */
+/** 1 つの質問の回答について、内容がどのタグでどれだけを占めるか */
+export interface QuestionShare {
+  questionId: string;
+  /** 回答の総文字数（空白・改行を除く） */
   total: number;
-  /** どのタグも付いていない文字数 */
+  /** どのタグにも当たらない文字数 */
   untagged: number;
-  tags: TagShare[];
-  questions: number;
+  /** 割合の大きい順。tags の割合と untagged の割合を合わせると 100% */
+  tags: TagRatio[];
 }
 
 const isSpace = (ch: string) => /\s/.test(ch);
 
 /**
- * 回答のうち、どの内容がどれだけを占めるかを集計する。
- * 割合の分母は「回答の総文字数」。1 つの文に複数のタグを付けた場合は、それぞれのタグに数えるので、
- * タグの割合の合計が 100% を超えることがある（未分類は、どのタグも付いていない分）。
+ * 1 つの質問の回答を、タグごとの占有率に分解する（分母はその質問の回答の文字数）。
+ *
+ * 1 文字は 1 つのタグにだけ数える。範囲が重なったら、範囲が短い（より細かく付けた）タグを優先し、
+ * 同じ長さなら後から付けたタグを優先する。そのため、タグの割合と未分類の割合の合計は必ず 100% になる。
+ * 回答が空（空白のみ含む）なら null。
  */
-export function computeShare(questions: Question[]): ShareResult {
-  let total = 0;
-  let untagged = 0;
-  let counted = 0;
-  const perTag = new Map<string, { chars: number; passages: TagShare['passages'] }>();
+export function shareOfQuestion(q: Question): QuestionShare | null {
+  const units = q.answer.split(''); // マーク位置は UTF-16 のオフセット
+  const owner: (string | null)[] = new Array(units.length).fill(null);
 
-  for (const q of questions) {
-    const text = q.answer;
-    if (!text.trim()) continue;
-    counted++;
-    // マーク位置は UTF-16 のオフセットなので、コードユニット単位で数える
-    const units = text.split('');
-    const covered = new Uint8Array(units.length);
-    const byTag = new Map<string, Uint8Array>();
-
-    for (const m of q.marks) {
-      if (m.broken) continue;
-      const mask = byTag.get(m.tag) ?? new Uint8Array(units.length);
-      for (let i = Math.max(0, m.start); i < Math.min(units.length, m.end); i++) {
-        mask[i] = 1;
-        covered[i] = 1;
-      }
-      byTag.set(m.tag, mask);
-      const entry = perTag.get(m.tag) ?? { chars: 0, passages: [] };
-      entry.passages.push({ questionId: q.id, quote: m.quote });
-      perTag.set(m.tag, entry);
-    }
-
-    for (let i = 0; i < units.length; i++) {
-      if (isSpace(units[i])) continue;
-      total++;
-      if (!covered[i]) untagged++;
-    }
-    for (const [tag, mask] of byTag) {
-      let n = 0;
-      for (let i = 0; i < units.length; i++) if (mask[i] && !isSpace(units[i])) n++;
-      perTag.get(tag)!.chars += n;
-    }
+  const marks = q.marks
+    .map((m, index) => ({ m, index }))
+    .filter(({ m }) => !m.broken && m.end > m.start)
+    // 長いものを先に塗り、短いもの・後から付けたものを上書きさせる
+    .sort((a, b) => b.m.end - b.m.start - (a.m.end - a.m.start) || a.index - b.index);
+  for (const { m } of marks) {
+    for (let i = Math.max(0, m.start); i < Math.min(units.length, m.end); i++) owner[i] = m.tag;
   }
 
+  let total = 0;
+  let untagged = 0;
+  const perTag = new Map<string, number>();
+  for (let i = 0; i < units.length; i++) {
+    if (isSpace(units[i])) continue;
+    total++;
+    const tag = owner[i];
+    if (tag === null) untagged++;
+    else perTag.set(tag, (perTag.get(tag) ?? 0) + 1);
+  }
+  if (total === 0) return null;
+
   const tags = [...perTag.entries()]
-    .map(([tag, v]) => ({ tag, chars: v.chars, ratio: total ? v.chars / total : 0, passages: v.passages }))
+    .map(([tag, chars]) => ({ tag, chars, ratio: chars / total }))
     .sort((a, b) => b.chars - a.chars || a.tag.localeCompare(b.tag, 'ja'));
-  return { total, untagged, tags, questions: counted };
+  return { questionId: q.id, total, untagged, tags };
+}
+
+/** 回答のある質問それぞれの占有率（入力の順を保つ） */
+export function computeShares(questions: Question[]): QuestionShare[] {
+  const out: QuestionShare[] = [];
+  for (const q of questions) {
+    const s = shareOfQuestion(q);
+    if (s) out.push(s);
+  }
+  return out;
 }

@@ -4,6 +4,10 @@ import { flushSave } from './lib/store';
 import { initSync } from './lib/sync';
 import './styles.css';
 
+// 「Chrome で開く」の intent: リンクはハッシュ(#/…)を運べないので、?r=<画面> で受け取って #/… に直す
+const handoff = new URLSearchParams(location.search).get('r');
+if (handoff) history.replaceState(null, '', `${location.pathname}#${handoff}`);
+
 render(<App />, document.getElementById('app')!);
 
 // 画面を閉じる/切り替える直前に、保存待ちの変更を書き込む

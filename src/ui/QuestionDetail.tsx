@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { allTags, ancestorsOf, childrenOf, expandToParagraph, interviewName, makeAnchor, normalizeTag } from '../lib/model';
 import { addMark, addQuestion, deleteQuestion, removeMark, updateQuestion, useAppState } from '../lib/store';
 import type { Question } from '../types';
-import { AutoTextarea, selectionOffsets, StatusDot, STATUS_LABEL, tagLine, tagTint, TagEditor } from './common';
+import { AutoTextarea, selectionOffsets, ShareBar, StatusDot, STATUS_LABEL, tagLine, tagTint, TagEditor } from './common';
+import { shareOfQuestion } from '../lib/stats';
 import { go, paths } from './router';
 
 interface Selection {
@@ -31,7 +32,7 @@ function AnswerView(props: {
       cuts.add(clamp(a.end));
     }
     const sorted = [...cuts].sort((x, y) => x - y);
-    const out: { from: number; to: number; ids: string[]; tags: string[] }[] = [];
+    const out: { from: number; to: number; ids: string[]; tags: string[]; diveEnd: boolean }[] = [];
     for (let i = 0; i < sorted.length - 1; i++) {
       const from = sorted[i];
       const to = sorted[i + 1];
@@ -40,6 +41,8 @@ function AnswerView(props: {
         to,
         ids: anchors.filter((a) => a.start <= from && a.end >= to).map((a) => a.id),
         tags: [...new Set(marks.filter((m) => m.start <= from && m.end >= to).map((m) => m.tag))],
+        // 深掘りの範囲の最後の部分には「Q」の印を付ける
+        diveEnd: anchors.some((a) => clamp(a.end) === to && a.start < to),
       });
     }
     return out;
@@ -48,13 +51,18 @@ function AnswerView(props: {
   return (
     <div class="answer-view" ref={props.containerRef}>
       {parts.map((p) => {
-        const style = p.tags.length
+        // 内容タグ = 色の塗り（複数なら上下に帯状に分ける）。深掘り = 黒い点線の下線 + 「Q」の印。
+        // 表現を分けているので、重なっても見分けられる
+        const n = p.tags.length;
+        const style = n
           ? {
-              background: tagTint(p.tags[0]),
-              boxShadow: p.tags.map((t, i) => `inset 0 -${3 * (i + 1)}px 0 ${tagLine(t)}`).join(', '),
+              background:
+                n === 1
+                  ? tagTint(p.tags[0])
+                  : `linear-gradient(to bottom, ${p.tags.map((t, i) => `${tagTint(t)} ${(i * 100) / n}% ${((i + 1) * 100) / n}%`).join(', ')})`,
             }
           : undefined;
-        const cls = p.tags.length ? 'tagged' : '';
+        const cls = `${n ? 'tagged' : ''}${p.diveEnd ? ' dive-end' : ''}`;
         return p.ids.length ? (
           <mark
             key={p.from}
@@ -70,7 +78,7 @@ function AnswerView(props: {
             {text.slice(p.from, p.to)}
           </mark>
         ) : (
-          <span key={p.from} class={cls} style={style} title={p.tags.length ? p.tags.map((t) => `#${t}`).join(' ') : undefined}>
+          <span key={p.from} class={cls} style={style} title={n ? p.tags.map((t) => `#${t}`).join(' ') : undefined}>
             {text.slice(p.from, p.to)}
           </span>
         );
@@ -240,6 +248,7 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
   const quoteFor = (s: Selection) => makeAnchor(q.answer, s.start, s.end);
   const anchor = sel ? quoteFor(sel) : null;
 
+  const share = shareOfQuestion(q);
   const tagPool = [...new Set([...tags, ...data.questions.flatMap((x) => x.marks.map((m) => m.tag))])];
   const applyTag = (tag: string, wholeParagraph: boolean) => {
     if (!sel) return;
@@ -366,8 +375,8 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
               onOpen={(id) => go(paths.question(q.interviewId, id))}
             />
             <p class="hint muted">
-              文字をなぞって選ぶと、そこから深掘り質問を作ったり、内容タグ（自己PR・志望動機など）を付けたりできます。
-              {anchors.length > 0 && '色が付いた部分は、深掘り質問のある箇所です（タップで開く）。'}
+              文字をなぞって選ぶと、そこから深掘り質問を作ったり、内容タグ（自己PR・志望動機など）を付けたりできます。色の塗りは内容タグ、黒い点線と「Q」は深掘り質問のある箇所です（タップで開く）。
+              
             </p>
           </>
         ) : (
@@ -379,9 +388,15 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
             <div class="section-head">
               <h3>内容タグ <span class="count">{q.marks.length}</span></h3>
               <a class="muted small" href={paths.stats(q.interviewId)}>
-                占有率を見る →
+                質問ごとの一覧 →
               </a>
             </div>
+            {share && (
+              <div class="share-here">
+                <p class="small muted">この回答の内訳（回答 {share.total.toLocaleString('ja-JP')} 字に対する割合）</p>
+                <ShareBar share={share} />
+              </div>
+            )}
             <ul>
               {q.marks.map((m) => (
                 <li key={m.id}>
