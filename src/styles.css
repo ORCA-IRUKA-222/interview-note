@@ -964,6 +964,14 @@ body.is-dragging * {
   margin-bottom: 8px;
 }
 
+.quote-text {
+  display: -webkit-inline-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  vertical-align: top;
+}
+
 .deep-quote {
   position: relative;
   padding-right: 34px;
@@ -1344,7 +1352,10 @@ body.is-dragging * {
 }
 
 .deep-bar {
-  position: sticky;
+  /* 表示領域を縮めないよう、画面の下に重ねる（縮むと選択中にブラウザが自動スクロールしてしまう） */
+  position: absolute;
+  left: 0;
+  right: 0;
   bottom: 0;
   z-index: 5;
   padding: 10px 12px;
@@ -1352,6 +1363,11 @@ body.is-dragging * {
   background: var(--surface);
   border-top: 2px solid var(--accent);
   box-shadow: 0 -8px 24px rgba(20, 24, 50, 0.14);
+}
+
+/* バーがかぶる分だけ、一番下の内容までスクロールできるよう余白を足す */
+.col-detail .detail-body {
+  padding-bottom: calc(24px + var(--bar-h, 0px));
 }
 
 .deep-quote {

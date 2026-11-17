@@ -18,6 +18,9 @@ import { AutoTextarea, selectionOffsets, ShareBar, StatusDot, STATUS_LABEL, tagL
 import { shareOfQuestion } from '../lib/stats';
 import { go, paths } from './router';
 
+/** 選択が止まってから操作バーを出すまでの待ち（タッチで選択範囲の端をつかんで動かしている間は出さない） */
+const SETTLE_MS = 280;
+
 interface Selection {
   start: number;
   end: number;
@@ -197,7 +200,8 @@ function SelectionBar(props: {
       }}
     >
       <div class="deep-quote">
-        <span class="muted">選択中</span> 「{props.quote.length > 60 ? `${props.quote.slice(0, 60)}…` : props.quote}」
+        <span class="muted">選択中</span>{' '}
+        <span class="quote-text">「{props.quote.length > 60 ? `${props.quote.slice(0, 60)}…` : props.quote}」</span>
         <button type="button" class="icon-btn bar-close" aria-label="選択を閉じる" onClick={props.onCancel}>
           ✕
         </button>
@@ -344,27 +348,107 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
     return () => clearTimeout(t);
   }, [notice]);
 
-  // 閲覧モードの範囲選択を監視する（スマホの長押し選択も selectionchange で拾える）
+  // ---- 範囲選択の監視 ----------------------------------------------------------
+  // 選択の最中（マウスのボタンを押している間／指で選択範囲を動かしている間）は操作バーを出さない。
+  // 途中でバーが出ると表示領域が縮み、マウスが領域の外になってブラウザが自動スクロールしてしまい、選びにくくなるため。
+  // マウスは「離した瞬間」、タッチは「選択が止まって少し経ったとき」にバーを出す。
+  const pressing = useRef(false);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const evaluateRef = useRef<() => void>(() => undefined);
+  const schedule = (delay: number) => {
+    clearTimeout(settleTimer.current);
+    settleTimer.current = setTimeout(() => evaluateRef.current(), delay);
+  };
+
+  const readTextarea = () => {
+    const el = textRef.current;
+    if (!el || el.selectionStart === el.selectionEnd) return setSel(null);
+    setSel({ start: el.selectionStart, end: el.selectionEnd });
+  };
+  const readView = () => {
+    const container = answerRef.current;
+    if (!container) return;
+    // 深掘り入力欄にフォーカスがある間は、選択が解除されても保持する
+    if (barRef.current?.contains(document.activeElement)) return;
+    const next = selectionOffsets(container);
+    clearTimeout(hideTimer.current);
+    if (next) setSel(next);
+    else hideTimer.current = setTimeout(() => setSel(null), 250);
+  };
+  evaluateRef.current = mode === 'view' ? readView : readTextarea;
+
   useEffect(() => {
-    if (mode !== 'view') return;
-    const onChange = () => {
-      const container = answerRef.current;
-      if (!container) return;
-      // 深掘り入力欄にフォーカスがある間は、選択が解除されても保持する
-      if (barRef.current?.contains(document.activeElement)) return;
-      const next = selectionOffsets(container);
-      clearTimeout(hideTimer.current);
-      if (next) setSel(next);
-      else hideTimer.current = setTimeout(() => setSel(null), 250);
+    const down = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse' || e.button !== 0) return;
+      const t = e.target as Node;
+      if (barRef.current?.contains(t)) return;
+      pressing.current = true;
+      // 選び直しを始めたら、前のバーはいったん閉じる
+      if (answerRef.current?.contains(t) || t === textRef.current) {
+        clearTimeout(settleTimer.current);
+        clearTimeout(hideTimer.current);
+        setSel(null);
+      }
     };
+    const up = () => {
+      if (!pressing.current) return;
+      pressing.current = false;
+      schedule(0);
+    };
+    const onChange = () => {
+      if (mode === 'view' && !pressing.current) schedule(SETTLE_MS);
+    };
+    window.addEventListener('pointerdown', down, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('pointercancel', up, true);
+    window.addEventListener('blur', up);
     document.addEventListener('selectionchange', onChange);
     // 切り替え直後にすでに選択されていた場合も拾う
-    onChange();
+    if (mode === 'view') schedule(0);
     return () => {
+      window.removeEventListener('pointerdown', down, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('pointercancel', up, true);
+      window.removeEventListener('blur', up);
       document.removeEventListener('selectionchange', onChange);
+      clearTimeout(settleTimer.current);
       clearTimeout(hideTimer.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
+
+  // 操作バーは画面の下に重ねて表示する（表示領域を縮めない）。かぶる分だけ下に余白を足し、
+  // 選んだ文がバーに隠れないように一度だけ位置を合わせる
+  const sectionRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const bar = barRef.current;
+    const section = sectionRef.current;
+    if (!section) return;
+    if (!bar) {
+      section.style.removeProperty('--bar-h');
+      return;
+    }
+    const setHeight = () => section.style.setProperty('--bar-h', `${bar.offsetHeight}px`);
+    setHeight();
+    const ro = new ResizeObserver(setHeight);
+    ro.observe(bar);
+
+    const scroller = section.querySelector<HTMLElement>('.col-body');
+    const range = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0) : null;
+    const raf = requestAnimationFrame(() => {
+      if (!scroller || !range || range.collapsed) return;
+      const r = range.getBoundingClientRect();
+      const top = scroller.getBoundingClientRect().top;
+      const visibleBottom = bar.getBoundingClientRect().top - 12;
+      if (r.height > visibleBottom - top - 24) return; // 画面より大きい選択は動かさない
+      if (r.bottom > visibleBottom) scroller.scrollTop += r.bottom - visibleBottom;
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      section.style.removeProperty('--bar-h');
+    };
+  }, [sel !== null]);
 
   if (!q) {
     return (
@@ -445,16 +529,11 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
     go(q.parentId ? paths.question(q.interviewId, q.parentId) : paths.interview(q.interviewId));
   };
 
-  const fromTextarea = () => {
-    const el = textRef.current;
-    if (!el || el.selectionStart === el.selectionEnd) return setSel(null);
-    setSel({ start: el.selectionStart, end: el.selectionEnd });
-  };
 
   const backHref = q.parentId ? paths.question(q.interviewId, q.parentId) : paths.interview(q.interviewId);
 
   return (
-    <section class="col col-detail" aria-label="質問の詳細">
+    <section class="col col-detail" aria-label="質問の詳細" ref={sectionRef}>
       <header class="col-head">
         <a class="btn back" href={paths.interview(iid)}>
           ← 質問一覧
@@ -536,7 +615,8 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
               onInput={(e) => (setSel(null), patch({ answer: (e.target as HTMLTextAreaElement).value }))}
               onSelect={(e) => {
                 textRef.current = e.target as HTMLTextAreaElement;
-                fromTextarea();
+                // マウスで選んでいる最中はバーを出さない（離したときに出す）
+                if (!pressing.current) schedule(SETTLE_MS);
               }}
             />
             {q.answer.trim() && <p class="hint muted">{q.answer.length} 字 ・ 目安の話す時間 約 {Math.max(1, Math.round(q.answer.length / 5))} 秒</p>}
