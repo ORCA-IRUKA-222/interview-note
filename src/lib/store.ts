@@ -13,7 +13,9 @@ import {
   newId,
   nudgeQuestion as planNudge,
   remapChildAnchors,
+  remapLinks,
   remapMarks,
+  stripLinksTo,
   type MoveTarget,
 } from './model';
 import { mergeData, parseData } from './merge';
@@ -231,11 +233,14 @@ export function deleteInterview(id: string) {
   const { data } = state;
   const now = Date.now();
   const deleted = { ...data.deleted, [id]: now };
-  const questions = data.questions.filter((q) => {
+  const removed = new Set<string>();
+  let questions = data.questions.filter((q) => {
     if (q.interviewId !== id) return true;
     deleted[q.id] = now;
+    removed.add(q.id);
     return false;
   });
+  questions = stripLinksTo(questions, removed, now);
   setData({ ...data, interviews: data.interviews.filter((i) => i.id !== id), questions, deleted }, { local: true });
 }
 
@@ -257,7 +262,12 @@ export function updateQuestion(id: string, patch: Partial<Question>) {
   const now = Date.now();
   let questions = data.questions.map((q) => {
     if (q.id !== id) return q;
-    const p = typeof patch.answer === 'string' && q.marks.length ? { ...patch, marks: remapMarks(patch.answer, q.marks) } : patch;
+    // 回答を書き換えたら、内容タグとリンクの位置も追従させる
+    let p = patch;
+    if (typeof patch.answer === 'string') {
+      if (q.marks.length) p = { ...p, marks: remapMarks(patch.answer, q.marks) };
+      if (q.links.length) p = { ...p, links: remapLinks(patch.answer, q.links) };
+    }
     return touch(q, p, now);
   });
   if (typeof patch.answer === 'string') {
@@ -273,7 +283,8 @@ export function deleteQuestion(id: string) {
   const now = Date.now();
   const deleted = { ...data.deleted };
   for (const x of ids) deleted[x] = now;
-  setData({ ...data, questions: data.questions.filter((q) => !ids.has(q.id)), deleted }, { local: true });
+  const questions = stripLinksTo(data.questions.filter((q) => !ids.has(q.id)), ids, now);
+  setData({ ...data, questions, deleted }, { local: true });
 }
 
 /** 質問(と深掘り)を別の面接へコピーする。共通の質問を会社ごとの面接に取り込むのに使う */
@@ -368,4 +379,22 @@ export function addMark(questionId: string, range: { start: number; end: number 
 export function removeMark(questionId: string, markId: string) {
   const q = state.data.questions.find((x) => x.id === questionId);
   if (q) updateQuestion(questionId, { marks: q.marks.filter((m) => m.id !== markId) });
+}
+
+// ---- 質問へのリンク ---------------------------------------------------------
+
+/** 回答の範囲から、既存の質問へリンクを張る。自分自身・存在しない質問・同じ範囲への重複は張らない */
+export function addLink(questionId: string, range: { start: number; end: number }, targetId: string): boolean {
+  const { questions } = state.data;
+  const q = questions.find((x) => x.id === questionId);
+  const a = q && makeAnchor(q.answer, range.start, range.end);
+  if (!q || !a || questionId === targetId || !questions.some((x) => x.id === targetId)) return false;
+  if (q.links.some((l) => l.targetId === targetId && l.start === a.start && l.end === a.end)) return false;
+  updateQuestion(questionId, { links: [...q.links, { id: newId(), start: a.start, end: a.end, quote: a.quote, targetId }] });
+  return true;
+}
+
+export function removeLink(questionId: string, linkId: string) {
+  const q = state.data.questions.find((x) => x.id === questionId);
+  if (q) updateQuestion(questionId, { links: q.links.filter((l) => l.id !== linkId) });
 }

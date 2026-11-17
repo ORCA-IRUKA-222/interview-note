@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { allTags, ancestorsOf, childrenOf, expandToParagraph, interviewName, makeAnchor, normalizeTag } from '../lib/model';
-import { addMark, addQuestion, deleteQuestion, removeMark, updateQuestion, useAppState } from '../lib/store';
+import {
+  allTags,
+  ancestorsOf,
+  backlinksTo,
+  childrenOf,
+  expandToParagraph,
+  interviewName,
+  makeAnchor,
+  normalizeTag,
+  questionTrail,
+  suggestLinkTargets,
+} from '../lib/model';
+import { search } from '../lib/search';
+import { addLink, addMark, addQuestion, deleteQuestion, removeLink, removeMark, updateQuestion, useAppState } from '../lib/store';
 import type { Question } from '../types';
 import { AutoTextarea, selectionOffsets, ShareBar, StatusDot, STATUS_LABEL, tagLine, tagTint, TagEditor } from './common';
 import { shareOfQuestion } from '../lib/stats';
@@ -11,48 +23,62 @@ interface Selection {
   end: number;
 }
 
+/** 回答の範囲から行ける先（深掘りの質問か、リンク先の質問） */
+interface Target {
+  id: string;
+  kind: 'dive' | 'link';
+}
+
 /**
- * 回答テキストを描画する。深掘りの引用箇所は黄色で強調してタップで該当の質問へ飛べ、
- * 内容タグを付けた範囲はタグごとの色の下線で示す。
+ * 回答テキストを描画する。範囲に付けたものは、種類ごとに表現を分けて重なっても見分けられるようにする:
+ *   内容タグ    … 色の塗り
+ *   深掘り      … 黒い点線の下線 + 末尾の「Q」
+ *   リンク      … 青い実線の下線 + 末尾の「→」
+ * タップすると行き先へ移動する（行き先が複数あるときは選ぶ）。
  * （選択位置の計算のため、このコンテナの textContent は回答テキストと一致させる）
  */
 function AnswerView(props: {
   text: string;
   anchors: { id: string; start: number; end: number }[];
+  links: { id: string; start: number; end: number; targetId: string }[];
   marks: { id: string; start: number; end: number; tag: string }[];
   containerRef: { current: HTMLDivElement | null };
-  onOpen(id: string): void;
+  onOpen(targets: Target[]): void;
 }) {
-  const { text, anchors, marks } = props;
+  const { text, anchors, links, marks } = props;
   const parts = useMemo(() => {
     const cuts = new Set<number>([0, text.length]);
     const clamp = (n: number) => Math.max(0, Math.min(n, text.length));
-    for (const a of [...anchors, ...marks]) {
+    for (const a of [...anchors, ...links, ...marks]) {
       cuts.add(clamp(a.start));
       cuts.add(clamp(a.end));
     }
     const sorted = [...cuts].sort((x, y) => x - y);
-    const out: { from: number; to: number; ids: string[]; tags: string[]; diveEnd: boolean }[] = [];
+    const out: { from: number; to: number; targets: Target[]; tags: string[]; diveEnd: boolean; linkEnd: boolean }[] = [];
     for (let i = 0; i < sorted.length - 1; i++) {
       const from = sorted[i];
       const to = sorted[i + 1];
+      const covers = (r: { start: number; end: number }) => r.start <= from && r.end >= to;
       out.push({
         from,
         to,
-        ids: anchors.filter((a) => a.start <= from && a.end >= to).map((a) => a.id),
-        tags: [...new Set(marks.filter((m) => m.start <= from && m.end >= to).map((m) => m.tag))],
-        // 深掘りの範囲の最後の部分には「Q」の印を付ける
+        targets: [
+          ...anchors.filter(covers).map((a): Target => ({ id: a.id, kind: 'dive' })),
+          ...links.filter(covers).map((l): Target => ({ id: l.targetId, kind: 'link' })),
+        ],
+        tags: [...new Set(marks.filter(covers).map((m) => m.tag))],
+        // 範囲の最後の部分に印を付ける
         diveEnd: anchors.some((a) => clamp(a.end) === to && a.start < to),
+        linkEnd: links.some((l) => clamp(l.end) === to && l.start < to),
       });
     }
     return out;
-  }, [text, anchors, marks]);
+  }, [text, anchors, links, marks]);
 
   return (
     <div class="answer-view" ref={props.containerRef}>
       {parts.map((p) => {
-        // 内容タグ = 色の塗り（複数なら上下に帯状に分ける）。深掘り = 黒い点線の下線 + 「Q」の印。
-        // 表現を分けているので、重なっても見分けられる
+        // 内容タグ = 色の塗り（複数なら上下に帯状に分ける）
         const n = p.tags.length;
         const style = n
           ? {
@@ -62,48 +88,103 @@ function AnswerView(props: {
                   : `linear-gradient(to bottom, ${p.tags.map((t, i) => `${tagTint(t)} ${(i * 100) / n}% ${((i + 1) * 100) / n}%`).join(', ')})`,
             }
           : undefined;
-        const cls = `${n ? 'tagged' : ''}${p.diveEnd ? ' dive-end' : ''}`;
-        return p.ids.length ? (
+        const hasDive = p.targets.some((t) => t.kind === 'dive');
+        const hasLink = p.targets.some((t) => t.kind === 'link');
+        const cls = [n ? 'tagged' : '', hasDive ? 'hl' : '', hasLink ? 'lnk' : '', p.diveEnd ? 'dive-end' : '', p.linkEnd ? 'link-end' : '']
+          .filter(Boolean)
+          .join(' ');
+        if (!p.targets.length) {
+          return (
+            <span key={p.from} class={cls} style={style} title={n ? p.tags.map((t) => `#${t}`).join(' ') : undefined}>
+              {text.slice(p.from, p.to)}
+            </span>
+          );
+        }
+        return (
           <mark
             key={p.from}
-            class={`hl ${cls}`}
+            class={cls}
             style={style}
-            title="この部分への深掘り質問を開く"
+            title={hasLink && !hasDive ? 'リンク先の質問へ移動' : hasDive && !hasLink ? 'この部分への深掘り質問を開く' : 'つながっている質問を開く'}
             onClick={() => {
-              // 範囲選択の操作中はジャンプしない
+              // 範囲選択の操作中は移動しない
               if (window.getSelection()?.isCollapsed === false) return;
-              props.onOpen(p.ids[p.ids.length - 1]);
+              props.onOpen(p.targets);
             }}
           >
             {text.slice(p.from, p.to)}
           </mark>
-        ) : (
-          <span key={p.from} class={cls} style={style} title={n ? p.tags.map((t) => `#${t}`).join(' ') : undefined}>
-            {text.slice(p.from, p.to)}
-          </span>
         );
       })}
     </div>
   );
 }
 
-/** 選択範囲に対する操作バー: 深掘り質問を作る / 内容タグを付ける */
+/** 質問の所在つきの 1 行（リンク先の候補・リンク元・行き先の選択で共通） */
+function QuestionLine({ q, kind }: { q: Question; kind?: string }) {
+  const { data } = useAppState();
+  const trail = questionTrail(data, q);
+  return (
+    <span class="qline">
+      <span class="qline-trail">{trail.join(' ▸ ')}</span>
+      <span class="qline-text">
+        {kind && <span class="qline-kind">{kind}</span>}
+        {q.text || '(質問未入力)'}
+      </span>
+    </span>
+  );
+}
+
+const BAR_TAB_KEY = 'iqa.bartab';
+const readTab = (): 'ask' | 'tag' => {
+  try {
+    return localStorage.getItem(BAR_TAB_KEY) === 'tag' ? 'tag' : 'ask';
+  } catch {
+    return 'ask';
+  }
+};
+
+/**
+ * 選択範囲に対する操作バー。操作が増えても迷わないよう、入口は 2 つだけにしている:
+ *   「質問につなぐ」… 入力欄に打った文で新しい深掘りを作る、または既存の質問を選んでリンクする（候補は自動で出る）
+ *   「タグ」       … 内容タグを付ける
+ */
 function SelectionBar(props: {
   quote: string;
+  currentId: string;
   tags: string[];
   onDive(text: string): void;
+  onLink(targetId: string): void;
   onTag(tag: string, wholeParagraph: boolean): void;
   onCancel(): void;
   barRef: { current: HTMLDivElement | null };
 }) {
-  const [tab, setTab] = useState<'dive' | 'tag'>('dive');
+  const { data } = useAppState();
+  const [tab, setTab] = useState<'ask' | 'tag'>(readTab);
   const [text, setText] = useState('');
   const [tagDraft, setTagDraft] = useState('');
   const [para, setPara] = useState(false);
+  const switchTab = (t: 'ask' | 'tag') => {
+    setTab(t);
+    try {
+      localStorage.setItem(BAR_TAB_KEY, t);
+    } catch {
+      /* 記憶できなくても動く */
+    }
+  };
+
+  // 候補: 何か打っていればその検索結果、空なら「選んだ文に近い質問」
+  const typed = text.trim();
+  const candidates = useMemo(() => {
+    if (typed) return search(data, typed).map((h) => h.question).filter((x) => x.id !== props.currentId).slice(0, 8);
+    return suggestLinkTargets(data, props.quote, props.currentId);
+  }, [data, typed, props.quote, props.currentId]);
+
   const addTag = (raw: string) => {
     const t = normalizeTag(raw);
     if (t) props.onTag(t, para);
   };
+
   return (
     <div
       class="deep-bar"
@@ -122,31 +203,53 @@ function SelectionBar(props: {
         </button>
       </div>
       <div class="seg bar-tabs">
-        <button type="button" class={tab === 'dive' ? 'on' : ''} onClick={() => setTab('dive')}>
-          深掘り質問を作る
+        <button type="button" class={tab === 'ask' ? 'on' : ''} onClick={() => switchTab('ask')}>
+          質問につなぐ
         </button>
-        <button type="button" class={tab === 'tag' ? 'on' : ''} onClick={() => setTab('tag')}>
-          タグを付ける
+        <button type="button" class={tab === 'tag' ? 'on' : ''} onClick={() => switchTab('tag')}>
+          タグ
         </button>
       </div>
-      {tab === 'dive' ? (
-        <form
-          class="deep-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            props.onDive(text.trim());
-          }}
-        >
-          <input
-            value={text}
-            placeholder="ここについての深掘り質問（空でも作成可）"
-            enterkeyhint="done"
-            onInput={(e) => setText((e.target as HTMLInputElement).value)}
-          />
-          <button type="submit" class="btn primary">
-            深掘りを作る
-          </button>
-        </form>
+      {tab === 'ask' ? (
+        <div class="ask-pane">
+          <form
+            class="deep-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              props.onDive(typed);
+            }}
+          >
+            <input
+              value={text}
+              placeholder="新しい深掘りの質問、または既存の質問を検索"
+              enterkeyhint="done"
+              aria-label="深掘り質問の文、または既存の質問の検索語"
+              onInput={(e) => setText((e.target as HTMLInputElement).value)}
+            />
+          </form>
+          <ul class="cand-list">
+            <li>
+              <button type="button" class="cand cand-new" onClick={() => props.onDive(typed)}>
+                <span class="cand-plus">＋</span>
+                <span class="cand-main">{typed ? `「${typed}」を新しい深掘り質問にする` : '新しい深掘り質問を作る'}</span>
+              </button>
+            </li>
+            {candidates.length > 0 && (
+              <li class="cand-head muted small">{typed ? '既存の質問（タップでリンク）' : '選んだ文に近い既存の質問（タップでリンク）'}</li>
+            )}
+            {candidates.map((c) => (
+              <li key={c.id}>
+                <button type="button" class="cand" onClick={() => props.onLink(c.id)}>
+                  <span class="cand-main">
+                    <QuestionLine q={c} kind={c.parentId ? '深掘り' : 'トップ'} />
+                  </span>
+                  <span class="cand-go">リンク →</span>
+                </button>
+              </li>
+            ))}
+            {typed && candidates.length === 0 && <li class="cand-head muted small">一致する既存の質問はありません。</li>}
+          </ul>
+        </div>
       ) : (
         <div class="tag-pick">
           <label class="check small">
@@ -189,15 +292,57 @@ function SelectionBar(props: {
   );
 }
 
-export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
+/** 行き先が複数あるとき（深掘りとリンクが重なった範囲など）に選ぶ */
+function TargetPicker(props: { targets: Target[]; onPick(t: Target): void; onClose(): void }) {
+  const { data } = useAppState();
+  return (
+    <div class="modal-back" role="dialog" aria-modal="true" aria-label="移動先を選ぶ" onClick={props.onClose}>
+      <div class="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>どこへ移動しますか？</h3>
+        <ul class="cand-list">
+          {props.targets.map((t) => {
+            const q = data.questions.find((x) => x.id === t.id);
+            if (!q) return null;
+            return (
+              <li key={`${t.kind}-${t.id}`}>
+                <button type="button" class="cand" onClick={() => props.onPick(t)}>
+                  <span class="cand-main">
+                    <QuestionLine q={q} kind={t.kind === 'dive' ? '深掘り' : 'リンク'} />
+                  </span>
+                  <span class="cand-go">開く →</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <div class="form-actions">
+          <button type="button" class="btn" onClick={props.onClose}>
+            閉じる
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; from?: string }) {
   const { data } = useAppState();
   const q = data.questions.find((x) => x.id === qid);
   const [mode, setMode] = useState<'view' | 'edit'>(() => (q && q.answer ? 'view' : 'edit'));
   const [sel, setSel] = useState<Selection | null>(null);
+  const [picker, setPicker] = useState<Target[] | null>(null);
+  const [notice, setNotice] = useState('');
   const answerRef = useRef<HTMLDivElement | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const textRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // 操作結果の短い知らせ（数秒で消える）
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(''), 2800);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   // 閲覧モードの範囲選択を監視する（スマホの長押し選択も selectionchange で拾える）
   useEffect(() => {
@@ -242,6 +387,10 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
   const anchors = children
     .filter((c): c is Question & { anchor: NonNullable<Question['anchor']> } => !!c.anchor && !c.anchor.broken)
     .map((c) => ({ id: c.id, start: c.anchor.start, end: c.anchor.end }));
+  const byId = new Map(data.questions.map((x) => [x.id, x]));
+  const links = q.links.filter((l) => !l.broken && byId.has(l.targetId));
+  const backlinks = backlinksTo(data.questions, q.id);
+  const fromQuestion = from && from !== q.id ? byId.get(from) : undefined;
   const tags = allTags(data.questions).map((t) => t.tag);
   const patch = (p: Partial<Question>) => updateQuestion(q.id, p);
 
@@ -254,6 +403,28 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
     if (!sel) return;
     const range = wholeParagraph ? expandToParagraph(q.answer, sel.start, sel.end) : sel;
     addMark(q.id, range, tag);
+    window.getSelection()?.removeAllRanges();
+    setSel(null);
+  };
+
+  const openTarget = (t: Target) => {
+    setPicker(null);
+    const tq = byId.get(t.id);
+    if (!tq) return;
+    // リンクをたどったときは、元の質問へ戻る印を付ける
+    go(t.kind === 'link' ? paths.question(tq.interviewId, tq.id, q.id) : paths.question(tq.interviewId, tq.id));
+  };
+  const openTargets = (targets: Target[]) => {
+    const valid = targets.filter((t) => byId.has(t.id));
+    if (valid.length === 1) openTarget(valid[0]);
+    else if (valid.length > 1) setPicker(valid);
+  };
+
+  const applyLink = (targetId: string) => {
+    if (!sel) return;
+    const target = byId.get(targetId);
+    if (addLink(q.id, sel, targetId)) setNotice(`リンクしました →「${target?.text || '(質問未入力)'}」`);
+    else setNotice('すでに同じ範囲から同じ質問へリンクしています');
     window.getSelection()?.removeAllRanges();
     setSel(null);
   };
@@ -295,6 +466,11 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
       </header>
 
       <div class="col-body detail-body">
+        {fromQuestion && (
+          <a class="from-chip" href={paths.question(fromQuestion.interviewId, fromQuestion.id)}>
+            ↩ 「{fromQuestion.text || '(質問未入力)'}」に戻る
+          </a>
+        )}
         {ancestors.length > 0 && (
           <nav class="crumbs" aria-label="深掘りの経路">
             {ancestors.map((a, idx) => {
@@ -370,17 +546,77 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
             <AnswerView
               text={q.answer}
               anchors={anchors}
+              links={links}
               marks={q.marks.filter((m) => !m.broken)}
               containerRef={answerRef}
-              onOpen={(id) => go(paths.question(q.interviewId, id))}
+              onOpen={openTargets}
             />
             <p class="hint muted">
-              文字をなぞって選ぶと、そこから深掘り質問を作ったり、内容タグ（自己PR・志望動機など）を付けたりできます。色の塗りは内容タグ、黒い点線と「Q」は深掘り質問のある箇所です（タップで開く）。
+              文字をなぞって選ぶと、そこから深掘り質問を作ったり、既存の質問へリンクしたり、内容タグ（自己PR・志望動機など）を付けたりできます。色の塗りは内容タグ、黒い点線と「Q」は深掘り質問、青い下線と「→」はほかの質問へのリンクです（タップで移動）。
               
             </p>
           </>
         ) : (
           <p class="muted">回答がまだありません。「編集」から書き始めましょう。</p>
+        )}
+
+        {(q.links.length > 0 || backlinks.length > 0) && (
+          <div class="links-block">
+            {q.links.length > 0 && (
+              <>
+                <div class="section-head">
+                  <h3>
+                    リンク <span class="count">{q.links.length}</span>
+                  </h3>
+                  <span class="muted small">この回答から、ほかの質問へ</span>
+                </div>
+                <ul class="link-list">
+                  {q.links.map((l) => {
+                    const target = byId.get(l.targetId);
+                    const ok = !!target && !l.broken;
+                    return (
+                      <li key={l.id}>
+                        <span class="mark-quote">
+                          「{l.quote.length > 40 ? `${l.quote.slice(0, 40)}…` : l.quote}」
+                          {l.broken && <span class="warn">（回答から消えました）</span>}
+                          {!target && <span class="warn">（リンク先の質問がありません）</span>}
+                        </span>
+                        {ok && target ? (
+                          <a class="link-go" href={paths.question(target.interviewId, target.id, q.id)}>
+                            <QuestionLine q={target} kind={target.parentId ? '深掘り' : 'トップ'} />
+                          </a>
+                        ) : (
+                          <span class="muted small">移動できません</span>
+                        )}
+                        <button type="button" class="icon-btn" aria-label="このリンクを外す" onClick={() => removeLink(q.id, l.id)}>
+                          ✕
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+            {backlinks.length > 0 && (
+              <>
+                <div class="section-head">
+                  <h3>
+                    この質問を参照している箇所 <span class="count">{backlinks.length}</span>
+                  </h3>
+                </div>
+                <ul class="link-list">
+                  {backlinks.map(({ question: src, link }) => (
+                    <li key={link.id}>
+                      <span class="mark-quote">「{link.quote.length > 40 ? `${link.quote.slice(0, 40)}…` : link.quote}」</span>
+                      <a class="link-go" href={paths.question(src.interviewId, src.id)}>
+                        <QuestionLine q={src} kind={src.parentId ? '深掘り' : 'トップ'} />
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
         )}
 
         {q.marks.length > 0 && (
@@ -477,12 +713,20 @@ export function QuestionDetail({ iid, qid }: { iid: string; qid: string }) {
       {anchor && (
         <SelectionBar
           quote={anchor.quote}
+          currentId={q.id}
           tags={tagPool}
           barRef={barRef}
           onDive={createDeepDive}
+          onLink={applyLink}
           onTag={applyTag}
           onCancel={() => (window.getSelection()?.removeAllRanges(), setSel(null))}
         />
+      )}
+      {picker && <TargetPicker targets={picker} onPick={openTarget} onClose={() => setPicker(null)} />}
+      {notice && (
+        <div class="toast" role="status">
+          {notice}
+        </div>
       )}
     </section>
   );

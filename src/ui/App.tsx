@@ -72,7 +72,7 @@ export function App() {
             </section>
           )}
           {iid && qid ? (
-            <QuestionDetail key={qid} iid={iid} qid={qid} />
+            <QuestionDetail key={qid} iid={iid} qid={qid} from={route.name === 'question' ? route.from : undefined} />
           ) : (
             <section class="col col-detail placeholder">
               <div class="empty">{iid ? '質問を選ぶか、新しく追加してください' : ''}</div>

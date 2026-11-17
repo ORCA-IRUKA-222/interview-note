@@ -18,6 +18,20 @@ export interface Mark {
   broken?: boolean;
 }
 
+/**
+ * 回答の一部から、別の質問（トップの質問でも深掘りでも、別の面接のものでも）へ張るリンク。
+ * 深掘り（親子の関係）とは別の、参照の関係。同じ質問を何か所から参照してもよい。
+ */
+export interface Link {
+  id: string;
+  start: number;
+  end: number;
+  quote: string;
+  /** リンク先の質問 */
+  targetId: string;
+  broken?: boolean;
+}
+
 export type Status = 'todo' | 'draft' | 'done';
 
 /** 単語帳（フラッシュカード）の学習状態 */
@@ -43,6 +57,8 @@ export interface Question {
   tags: string[];
   /** 回答の中身に付けた内容タグ */
   marks: Mark[];
+  /** 回答の中から他の質問へのリンク */
+  links: Link[];
   status: Status;
   order: number;
   card: CardState;

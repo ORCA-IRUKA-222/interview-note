@@ -3,7 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 export type Route =
   | { name: 'home' }
   | { name: 'interview'; iid: string }
-  | { name: 'question'; iid: string; qid: string }
+  | { name: 'question'; iid: string; qid: string; from?: string }
   | { name: 'study'; iid?: string; tag?: string }
   | { name: 'karaoke'; qid: string }
   | { name: 'search'; q: string; tag?: string }
@@ -13,7 +13,8 @@ export type Route =
 export const paths = {
   home: '#/',
   interview: (iid: string) => `#/i/${iid}`,
-  question: (iid: string, qid: string) => `#/i/${iid}/q/${qid}`,
+  /** from: リンクをたどって来たときの、元の質問の id（戻る印を出すため） */
+  question: (iid: string, qid: string, from?: string) => `#/i/${iid}/q/${qid}${from ? `?from=${from}` : ''}`,
   study: (opts: { iid?: string; tag?: string } = {}) => {
     const p = new URLSearchParams();
     if (opts.iid) p.set('i', opts.iid);
@@ -38,7 +39,7 @@ export function parseRoute(hash: string): Route {
   const params = new URLSearchParams(query);
   const seg = pathPart.split('/').filter(Boolean);
   if (seg[0] === 'i' && seg[1]) {
-    if (seg[2] === 'q' && seg[3]) return { name: 'question', iid: seg[1], qid: seg[3] };
+    if (seg[2] === 'q' && seg[3]) return { name: 'question', iid: seg[1], qid: seg[3], from: params.get('from') ?? undefined };
     return { name: 'interview', iid: seg[1] };
   }
   if (seg[0] === 'study') return { name: 'study', iid: params.get('i') ?? undefined, tag: params.get('tag') ?? undefined };

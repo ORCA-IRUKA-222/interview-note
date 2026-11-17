@@ -1787,6 +1787,207 @@ body.is-dragging * {
   }
 }
 
+/* ---------- 質問どうしのリンク ---------- */
+
+/* <mark> の標準の黄色い背景は使わない（内容タグの塗りだけが背景になる） */
+.answer-view mark {
+  background: transparent;
+  color: inherit;
+}
+
+/* リンクのある箇所: 青い実線の下線 + 末尾の「→」。内容タグ(塗り)・深掘り(黒い点線+Q)と重なっても区別できる */
+.lnk {
+  text-decoration: underline solid var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.lnk:not(.hl) {
+  cursor: pointer;
+}
+
+.link-end::after {
+  content: '→';
+  display: inline-block;
+  margin: 0 1px 0 3px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.62em;
+  font-weight: 700;
+  line-height: 1.5;
+  vertical-align: super;
+  user-select: none;
+  -webkit-user-select: none;
+  text-decoration: none;
+}
+
+.dive-end.link-end::after {
+  content: 'Q →';
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.from-chip {
+  display: inline-flex;
+  max-width: 100%;
+  margin-bottom: 8px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.ask-pane {
+  display: grid;
+  gap: 8px;
+}
+
+.cand-list {
+  display: grid;
+  gap: 6px;
+  max-height: 38vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.cand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cand:hover {
+  background: var(--surface-2);
+}
+
+.cand-new {
+  border-style: dashed;
+  border-color: var(--accent);
+}
+
+.cand-plus {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.cand-main {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cand-go {
+  flex: none;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.cand-head {
+  padding: 4px 2px 0;
+}
+
+.qline {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.qline-trail {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.qline-text {
+  font-size: 0.92rem;
+}
+
+.qline-kind {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.link-list {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+}
+
+.link-list li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.link-list .mark-quote {
+  grid-column: 1 / -1;
+}
+
+.link-go {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.link-go:hover {
+  background: var(--surface-2);
+}
+
+.warn {
+  color: var(--danger);
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + var(--safe-bottom));
+  z-index: 970;
+  max-width: min(92vw, 520px);
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: var(--text);
+  color: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 0.9rem;
+  transform: translateX(-50%);
+  overflow-wrap: anywhere;
+}
+
 /* ---------- 質問ごとの占有率 ---------- */
 
 .sharebox {

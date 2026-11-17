@@ -1,4 +1,5 @@
-import type { Anchor, Data, Interview, Mark, Question } from '../types';
+import type { Anchor, Data, Interview, Link, Mark, Question } from '../types';
+import { normalize } from './text/normalizer';
 
 export function newId(): string {
   const c = globalThis.crypto;
@@ -47,6 +48,7 @@ export function createQuestion(
     keyPoints: '',
     tags: [],
     marks: [],
+    links: [],
     status: 'todo',
     order: now,
     card: { box: 0, due: null, seen: 0 },
@@ -82,6 +84,7 @@ export function copySubtree(
       anchor: isRoot ? null : q.anchor,
       tags: [...q.tags],
       marks: q.marks.map((m) => ({ ...m, id: newId() })),
+      links: q.links.map((l) => ({ ...l, id: newId(), targetId: idMap.get(l.targetId) ?? l.targetId })),
       card: { box: 0, due: null, seen: 0 },
       order: isRoot && rootOrder !== undefined ? rootOrder : now + index,
       createdAt: now,
@@ -328,16 +331,24 @@ export function nudgeQuestion(questions: Question[], id: string, dir: -1 | 1, no
 // 内容タグ（回答の一部に付けるタグ）
 // ---------------------------------------------------------------------------
 
-/** 内容タグを追従させる。remapAnchor と同じ規則（位置が合えばそのまま／引用を探し直す／消えたら broken） */
-export function remapMarks(newText: string, marks: Mark[]): Mark[] {
+/** 回答の編集後に、範囲つきの項目（内容タグ・リンク）を追従させる。位置が合えばそのまま／引用を探し直す／消えたら broken */
+function remapRanges<T extends { start: number; end: number; quote: string; broken?: boolean }>(newText: string, items: T[]): T[] {
   let changed = false;
-  const next = marks.map((m) => {
+  const next = items.map((m) => {
     const r = remapAnchor(newText, { start: m.start, end: m.end, quote: m.quote, broken: m.broken });
     if (r.start === m.start && r.end === m.end && !!r.broken === !!m.broken) return m;
     changed = true;
     return { ...m, start: r.start, end: r.end, broken: r.broken };
   });
-  return changed ? next : marks;
+  return changed ? next : items;
+}
+
+export function remapMarks(newText: string, marks: Mark[]): Mark[] {
+  return remapRanges(newText, marks);
+}
+
+export function remapLinks(newText: string, links: Link[]): Link[] {
+  return remapRanges(newText, links);
 }
 
 /** 範囲を段落（改行区切り）の境界まで広げる */
@@ -354,4 +365,70 @@ export function tagHue(tag: string): number {
   let h = 0;
   for (const ch of tag) h = (h * 31 + ch.codePointAt(0)!) % 360;
   return h;
+}
+
+// ---------------------------------------------------------------------------
+// 質問どうしのリンク（参照）
+// ---------------------------------------------------------------------------
+
+/** targets（削除された質問）へのリンクを、ほかの質問から取り除く。変更があった質問だけ updatedAt を更新する */
+export function stripLinksTo(questions: Question[], targets: Set<string>, now = Date.now()): Question[] {
+  let changed = false;
+  const next = questions.map((q) => {
+    if (!q.links.some((l) => targets.has(l.targetId))) return q;
+    changed = true;
+    return { ...q, links: q.links.filter((l) => !targets.has(l.targetId)), updatedAt: now };
+  });
+  return changed ? next : questions;
+}
+
+export interface Backlink {
+  /** リンクを張っている側の質問 */
+  question: Question;
+  link: Link;
+}
+
+/** id の質問を参照している箇所（リンク元）の一覧。壊れたリンクは除く */
+export function backlinksTo(questions: Question[], id: string): Backlink[] {
+  const out: Backlink[] = [];
+  for (const question of questions) {
+    if (question.id === id) continue;
+    for (const link of question.links) if (link.targetId === id && !link.broken) out.push({ question, link });
+  }
+  return out.sort((a, b) => a.question.order - b.question.order || a.link.start - b.link.start);
+}
+
+/** 質問の所在: 面接名 ▸ 親の質問 ▸ … （リンク先を選ぶとき、同じ名前の質問を見分けるために使う） */
+export function questionTrail(data: Data, q: Question): string[] {
+  const interview = data.interviews.find((i) => i.id === q.interviewId);
+  const trail = [interview ? interviewName(interview, '(無題の面接)') : '?'];
+  for (const a of ancestorsOf(data.questions, q.id)) trail.push(a.text || '(質問未入力)');
+  return trail;
+}
+
+const bigrams = (text: string): Set<string> => {
+  const chars = normalize(text).chars;
+  const out = new Set<string>();
+  for (let i = 0; i + 1 < chars.length; i++) out.add(chars[i] + chars[i + 1]);
+  return out;
+};
+
+/**
+ * 選んだ文（quote）に近い既存の質問を、近い順に返す。
+ * 質問文・回答・要点の 2 文字の並びが、選んだ文とどれだけ重なるかで測る（かな/カナ・全角半角の違いは無視）。
+ * 自分自身は除く。重なりが少ないものは出さない。
+ */
+export function suggestLinkTargets(data: Data, quote: string, excludeId: string, limit = 6): Question[] {
+  const want = bigrams(quote);
+  if (want.size === 0) return [];
+  const scored: { q: Question; score: number }[] = [];
+  for (const q of data.questions) {
+    if (q.id === excludeId) continue;
+    const have = bigrams(`${q.text} ${q.text} ${q.answer} ${q.keyPoints}`);
+    let hit = 0;
+    for (const g of want) if (have.has(g)) hit++;
+    const score = hit / want.size;
+    if (score >= 0.2) scored.push({ q, score });
+  }
+  return scored.sort((a, b) => b.score - a.score || a.q.order - b.q.order).slice(0, limit).map((s) => s.q);
 }

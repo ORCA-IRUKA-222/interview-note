@@ -109,6 +109,18 @@ export function parseData(raw: unknown): Data {
       answer: str(q.answer),
       keyPoints: str(q.keyPoints),
       tags: Array.isArray(q.tags) ? q.tags.filter((t): t is string => typeof t === 'string') : [],
+      links: Array.isArray(q.links)
+        ? (q.links as Record<string, unknown>[])
+            .filter((l) => l && typeof l.id === 'string' && typeof l.start === 'number' && typeof l.end === 'number' && typeof l.targetId === 'string')
+            .map((l) => ({
+              id: l.id as string,
+              start: l.start as number,
+              end: l.end as number,
+              quote: str(l.quote),
+              targetId: l.targetId as string,
+              ...(l.broken ? { broken: true as const } : {}),
+            }))
+        : [],
       marks: Array.isArray(q.marks)
         ? (q.marks as Record<string, unknown>[])
             .filter((m) => m && typeof m.id === 'string' && typeof m.start === 'number' && typeof m.end === 'number' && typeof m.tag === 'string')

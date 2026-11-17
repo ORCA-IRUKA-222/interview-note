@@ -38,6 +38,14 @@ function interviewMarkdown(interview: Interview, questions: Question[]): string 
     if (q.marks.length) {
       lines.push('', '**内容タグ**', '', ...q.marks.filter((m) => !m.broken).map((m) => `- #${m.tag} 「${m.quote.replace(/\s+/g, ' ')}」`));
     }
+    const valid = q.links.filter((l) => !l.broken && questions.some((x) => x.id === l.targetId));
+    if (valid.length) {
+      lines.push('', '**リンク**', '');
+      for (const l of valid) {
+        const target = questions.find((x) => x.id === l.targetId)!;
+        lines.push(`- 「${l.quote.replace(/\s+/g, ' ')}」→ ${target.text.trim() || '(質問未入力)'}`);
+      }
+    }
     const points = keyPointLines(q.keyPoints);
     if (points.length) {
       lines.push('', '**話す要点**', '', ...points.map((p) => `- ${p}`));

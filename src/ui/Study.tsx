@@ -9,7 +9,16 @@ function Card({ q, flipped, onFlip }: { q: Question; flipped: boolean; onFlip():
   const { data } = useAppState();
   const interview = data.interviews.find((i) => i.id === q.interviewId);
   const parent = q.parentId ? data.questions.find((x) => x.id === q.parentId) : undefined;
-  const follow = data.questions.filter((x) => x.parentId === q.id && x.text.trim());
+  // 想定される深掘り: 深掘りの質問 + この回答からリンクしている質問
+  const follow = [
+    ...data.questions.filter((x) => x.parentId === q.id && x.text.trim()).map((x) => ({ id: x.id, text: x.text, quote: x.anchor?.quote, link: false })),
+    ...q.links
+      .filter((l) => !l.broken)
+      .flatMap((l) => {
+        const t = data.questions.find((x) => x.id === l.targetId);
+        return t && t.text.trim() ? [{ id: `link-${l.id}`, text: t.text, quote: l.quote, link: true }] : [];
+      }),
+  ];
   const points = keyPointLines(q.keyPoints);
 
   return (
@@ -69,7 +78,7 @@ function Card({ q, flipped, onFlip }: { q: Question; flipped: boolean; onFlip():
               <ul class="follow">
                 {follow.map((f) => (
                   <li key={f.id}>
-                    {f.anchor && <span class="muted">「{f.anchor.quote}」→ </span>}
+                    {f.quote && <span class="muted">「{f.quote}」{f.link ? '⇒ ' : '→ '}</span>}
                     {f.text}
                   </li>
                 ))}
