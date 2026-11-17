@@ -12,7 +12,19 @@ import {
   suggestLinkTargets,
 } from '../lib/model';
 import { search } from '../lib/search';
-import { addLink, addMark, addQuestion, deleteQuestion, removeLink, removeMark, updateQuestion, useAppState } from '../lib/store';
+import {
+  addLink,
+  addMark,
+  addQuestion,
+  deleteQuestion,
+  reanchorChild,
+  reanchorLink,
+  reanchorMark,
+  removeLink,
+  removeMark,
+  updateQuestion,
+  useAppState,
+} from '../lib/store';
 import type { Question } from '../types';
 import { AutoTextarea, selectionOffsets, ShareBar, StatusDot, STATUS_LABEL, tagLine, tagTint, TagEditor } from './common';
 import { shareOfQuestion } from '../lib/stats';
@@ -25,6 +37,14 @@ const SETTLE_MS = 280;
 interface Selection {
   start: number;
   end: number;
+}
+
+/** 付け直し中の項目（深掘りの引用・リンク・内容タグのどれか） */
+interface Reattach {
+  kind: 'dive' | 'link' | 'mark';
+  id: string;
+  /** 画面に出す、元の引用 */
+  label: string;
 }
 
 /** 回答の範囲から行ける先（深掘りの質問か、リンク先の質問） */
@@ -161,6 +181,8 @@ function SelectionBar(props: {
   onLink(targetId: string): void;
   onTag(tag: string, wholeParagraph: boolean): void;
   onCancel(): void;
+  /** 付け直し中なら、深掘り/リンク/タグの操作の代わりに「この範囲に付け直す」だけを出す */
+  reattach?: { label: string; onApply(): void };
   barRef: { current: HTMLDivElement | null };
 }) {
   const { data } = useAppState();
@@ -207,15 +229,31 @@ function SelectionBar(props: {
           ✕
         </button>
       </div>
-      <div class="seg bar-tabs">
-        <button type="button" class={tab === 'ask' ? 'on' : ''} onClick={() => switchTab('ask')}>
-          質問につなぐ
-        </button>
-        <button type="button" class={tab === 'tag' ? 'on' : ''} onClick={() => switchTab('tag')}>
-          タグ
-        </button>
-      </div>
-      {tab === 'ask' ? (
+      {props.reattach ? (
+        <div class="reattach-pane">
+          <p class="small muted">
+            「{props.reattach.label.length > 30 ? `${props.reattach.label.slice(0, 30)}…` : props.reattach.label}」の箇所を、いま選んだ範囲に付け直します。
+          </p>
+          <div class="form-actions">
+            <button type="button" class="btn primary" onClick={props.reattach.onApply}>
+              この範囲に付け直す
+            </button>
+            <button type="button" class="btn" onClick={props.onCancel}>
+              選び直す
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div class="seg bar-tabs">
+          <button type="button" class={tab === 'ask' ? 'on' : ''} onClick={() => switchTab('ask')}>
+            質問につなぐ
+          </button>
+          <button type="button" class={tab === 'tag' ? 'on' : ''} onClick={() => switchTab('tag')}>
+            タグ
+          </button>
+        </div>
+      )}
+      {props.reattach ? null : tab === 'ask' ? (
         <div class="ask-pane">
           <form
             class="deep-form"
@@ -337,11 +375,20 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
   const [sel, setSel] = useState<Selection | null>(null);
   const layout = useLayout();
   const [picker, setPicker] = useState<Target[] | null>(null);
+  const [reattach, setReattach] = useState<Reattach | null>(null);
   const [notice, setNotice] = useState('');
   const answerRef = useRef<HTMLDivElement | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const textRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Esc で、付け直しをやめる
+  useEffect(() => {
+    if (!reattach) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setReattach(null);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [reattach]);
 
   // 操作結果の短い知らせ（数秒で消える）
   useEffect(() => {
@@ -533,6 +580,35 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
     setSel(null);
   };
 
+  /** 範囲が見つからなくなった（または選び直したい）項目 */
+  const brokenItems: Reattach[] = [
+    ...children.filter((c) => c.anchor?.broken).map((c): Reattach => ({ kind: 'dive', id: c.id, label: c.anchor!.quote })),
+    ...q.links.filter((l) => l.broken).map((l): Reattach => ({ kind: 'link', id: l.id, label: l.quote })),
+    ...q.marks.filter((m) => m.broken).map((m): Reattach => ({ kind: 'mark', id: m.id, label: m.quote })),
+  ];
+
+  const startReattach = (item: Reattach) => {
+    window.getSelection()?.removeAllRanges();
+    setSel(null);
+    setMode('view'); // 回答の文字を選べる表示にする
+    setReattach(item);
+    requestAnimationFrame(() => answerRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+  };
+
+  const applyReattach = () => {
+    if (!reattach || !sel) return;
+    const ok =
+      reattach.kind === 'dive'
+        ? reanchorChild(reattach.id, sel)
+        : reattach.kind === 'link'
+          ? reanchorLink(q.id, reattach.id, sel)
+          : reanchorMark(q.id, reattach.id, sel);
+    window.getSelection()?.removeAllRanges();
+    setSel(null);
+    setReattach(null);
+    setNotice(ok ? '箇所を付け直しました' : '付け直せませんでした');
+  };
+
   const createDeepDive = (text: string) => {
     if (!anchor) return;
     const id = addQuestion(q.interviewId, { text, parentId: q.id, anchor });
@@ -633,6 +709,28 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
           </div>
         </div>
 
+        {reattach ? (
+          <div class="reattach-banner" role="status">
+            <span>
+              📍 「{reattach.label.length > 24 ? `${reattach.label.slice(0, 24)}…` : reattach.label}」の箇所を選び直します。回答の文字をなぞって選んでください。
+            </span>
+            <button type="button" class="btn" onClick={() => setReattach(null)}>
+              やめる
+            </button>
+          </div>
+        ) : (
+          brokenItems.length > 0 && (
+            <div class="notice reattach-notice" role="status">
+              <span>
+                ⚠ 回答の編集で、範囲が見つからなくなった箇所が <strong>{brokenItems.length} 件</strong>あります。元の引用は残してあるので、新しい範囲を選んで付け直せます。
+              </span>
+              <button type="button" class="btn primary" onClick={() => startReattach(brokenItems[0])}>
+                「{brokenItems[0].label.length > 14 ? `${brokenItems[0].label.slice(0, 14)}…` : brokenItems[0].label}」を付け直す
+              </button>
+            </div>
+          )
+        )}
+
         {mode === 'edit' ? (
           <>
             <AutoTextarea
@@ -682,7 +780,7 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
                 <ul class="link-list">
                   {q.links.map((l) => {
                     const target = byId.get(l.targetId);
-                    const ok = !!target && !l.broken;
+                    const ok = !!target; // 範囲が外れていても、リンク先の質問は開ける
                     return (
                       <li key={l.id}>
                         <span class="mark-quote">
@@ -697,9 +795,18 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
                         ) : (
                           <span class="muted small">移動できません</span>
                         )}
-                        <button type="button" class="icon-btn" aria-label="このリンクを外す" onClick={() => removeLink(q.id, l.id)}>
-                          ✕
-                        </button>
+                        <span class="item-actions">
+                          <button
+                            type="button"
+                            class={`btn small ${l.broken ? 'primary' : ''}`}
+                            onClick={() => startReattach({ kind: 'link', id: l.id, label: l.quote })}
+                          >
+                            箇所を選び直す
+                          </button>
+                          <button type="button" class="icon-btn" aria-label="このリンクを外す" onClick={() => removeLink(q.id, l.id)}>
+                            ✕
+                          </button>
+                        </span>
                       </li>
                     );
                   })}
@@ -751,6 +858,13 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
                   <span class={`mark-quote ${m.broken ? 'broken' : ''}`}>
                     「{m.quote.length > 44 ? `${m.quote.slice(0, 44)}…` : m.quote}」{m.broken && '（回答から消えました）'}
                   </span>
+                  <button
+                    type="button"
+                    class={`btn small ${m.broken ? 'primary' : ''}`}
+                    onClick={() => startReattach({ kind: 'mark', id: m.id, label: m.quote })}
+                  >
+                    箇所を選び直す
+                  </button>
                   <button type="button" class="icon-btn" aria-label={`${m.tag} のタグを外す`} onClick={() => removeMark(q.id, m.id)}>
                     ✕
                   </button>
@@ -791,7 +905,7 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
         ) : (
           <ul class="children">
             {children.map((c) => (
-              <li key={c.id}>
+              <li key={c.id} class={c.anchor?.broken ? 'is-broken' : ''}>
                 <a class="row" href={paths.question(c.interviewId, c.id)}>
                   <StatusDot status={c.status} />
                   <span class="child-main">
@@ -804,6 +918,25 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
                     <span>{c.text || '(質問未入力)'}</span>
                   </span>
                 </a>
+                <div class="item-actions">
+                  <button
+                    type="button"
+                    class={`btn small ${c.anchor?.broken ? 'primary' : ''}`}
+                    onClick={() => startReattach({ kind: 'dive', id: c.id, label: c.anchor?.quote || c.text })}
+                  >
+                    {c.anchor ? '箇所を選び直す' : '箇所を指定する'}
+                  </button>
+                  {c.anchor?.broken && (
+                    <button
+                      type="button"
+                      class="btn small"
+                      title="回答の中の箇所は付けずに、深掘り質問だけ残す"
+                      onClick={() => reanchorChild(c.id, null)}
+                    >
+                      箇所を外す
+                    </button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
@@ -831,6 +964,7 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
           onLink={applyLink}
           onTag={applyTag}
           onCancel={() => (window.getSelection()?.removeAllRanges(), setSel(null))}
+          reattach={reattach ? { label: reattach.label, onApply: applyReattach } : undefined}
         />
       )}
       {picker && <TargetPicker targets={picker} onPick={openTarget} onClose={() => setPicker(null)} />}

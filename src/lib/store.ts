@@ -265,13 +265,13 @@ export function updateQuestion(id: string, patch: Partial<Question>) {
     // 回答を書き換えたら、内容タグとリンクの位置も追従させる
     let p = patch;
     if (typeof patch.answer === 'string') {
-      if (q.marks.length) p = { ...p, marks: remapMarks(patch.answer, q.marks) };
-      if (q.links.length) p = { ...p, links: remapLinks(patch.answer, q.links) };
+      if (q.marks.length) p = { ...p, marks: remapMarks(patch.answer, q.marks, q.answer) };
+      if (q.links.length) p = { ...p, links: remapLinks(patch.answer, q.links, q.answer) };
     }
     return touch(q, p, now);
   });
   if (typeof patch.answer === 'string') {
-    questions = remapChildAnchors(questions, id, patch.answer, now);
+    questions = remapChildAnchors(questions, id, patch.answer, now, data.questions.find((x) => x.id === id)?.answer);
   }
   setData({ ...data, questions }, { local: true });
 }
@@ -397,4 +397,45 @@ export function addLink(questionId: string, range: { start: number; end: number 
 export function removeLink(questionId: string, linkId: string) {
   const q = state.data.questions.find((x) => x.id === questionId);
   if (q) updateQuestion(questionId, { links: q.links.filter((l) => l.id !== linkId) });
+}
+
+// ---- 範囲の付け直し -----------------------------------------------------------
+// 回答を大きく書き換えて範囲が見つからなくなった（broken）ときや、範囲を変えたいときに、新しい範囲を指定し直す。
+
+/** 深掘り質問の引用（親の回答の範囲）を付け直す。range を null にすると箇所を外し、質問だけ残す */
+export function reanchorChild(childId: string, range: { start: number; end: number } | null): boolean {
+  const { questions } = state.data;
+  const child = questions.find((x) => x.id === childId);
+  const parent = child?.parentId ? questions.find((x) => x.id === child.parentId) : undefined;
+  if (!child || !parent) return false;
+  if (range === null) {
+    updateQuestion(childId, { anchor: null });
+    return true;
+  }
+  const a = makeAnchor(parent.answer, range.start, range.end);
+  if (!a) return false;
+  updateQuestion(childId, { anchor: a });
+  return true;
+}
+
+/** リンクの範囲を付け直す（リンク先はそのまま） */
+export function reanchorLink(questionId: string, linkId: string, range: { start: number; end: number }): boolean {
+  const q = state.data.questions.find((x) => x.id === questionId);
+  const a = q && makeAnchor(q.answer, range.start, range.end);
+  if (!q || !a || !q.links.some((l) => l.id === linkId)) return false;
+  updateQuestion(questionId, {
+    links: q.links.map((l) => (l.id === linkId ? { id: l.id, targetId: l.targetId, start: a.start, end: a.end, quote: a.quote } : l)),
+  });
+  return true;
+}
+
+/** 内容タグの範囲を付け直す（タグ名はそのまま） */
+export function reanchorMark(questionId: string, markId: string, range: { start: number; end: number }): boolean {
+  const q = state.data.questions.find((x) => x.id === questionId);
+  const a = q && makeAnchor(q.answer, range.start, range.end);
+  if (!q || !a || !q.marks.some((m) => m.id === markId)) return false;
+  updateQuestion(questionId, {
+    marks: q.marks.map((m) => (m.id === markId ? { id: m.id, tag: m.tag, start: a.start, end: a.end, quote: a.quote } : m)),
+  });
+  return true;
 }

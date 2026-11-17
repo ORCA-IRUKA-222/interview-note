@@ -2063,6 +2063,69 @@ body.is-dragging * {
   overflow-wrap: anywhere;
 }
 
+/* ---------- 外れた箇所の付け直し ---------- */
+
+.reattach-banner,
+.reattach-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 8px;
+}
+
+.reattach-banner {
+  padding: 10px 12px;
+  border: 2px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  font-size: 0.92rem;
+}
+
+.reattach-banner > span,
+.reattach-notice > span {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.reattach-pane {
+  display: grid;
+  gap: 6px;
+}
+
+.reattach-pane p {
+  margin: 0;
+}
+
+.btn.small {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 0.8rem;
+}
+
+.item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.children li.is-broken > .row {
+  border-color: var(--danger);
+}
+
+.children li > .item-actions {
+  padding: 2px 4px 8px;
+}
+
+.children .row {
+  margin-bottom: 4px;
+}
+
+.marks-list > ul > li > .btn.small {
+  flex: none;
+}
+
 /* ---------- 質問ごとの占有率 ---------- */
 
 .sharebox {

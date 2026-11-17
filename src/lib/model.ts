@@ -200,19 +200,16 @@ export function remapAnchor(newText: string, anchor: Anchor): Anchor {
   return { start: best, end: best + anchor.quote.length, quote: anchor.quote };
 }
 
-/** 質問の answer が変わったとき、その子の anchor を更新した質問配列を返す */
-export function remapChildAnchors(questions: Question[], parentId: string, newAnswer: string, now = Date.now()) {
+/**
+ * 質問の answer が変わったとき、その子（深掘り）の anchor を更新した質問配列を返す。
+ * oldAnswer を渡すと、編集の位置をたどって範囲を保つ（引用の内側を直しても外れない）。
+ */
+export function remapChildAnchors(questions: Question[], parentId: string, newAnswer: string, now = Date.now(), oldAnswer?: string) {
   let changed = false;
   const next = questions.map((q) => {
     if (q.parentId !== parentId || !q.anchor) return q;
-    const remapped = remapAnchor(newAnswer, q.anchor);
-    if (
-      remapped.start === q.anchor.start &&
-      remapped.end === q.anchor.end &&
-      !!remapped.broken === !!q.anchor.broken
-    ) {
-      return q;
-    }
+    const remapped = remapRanges(newAnswer, [q.anchor], oldAnswer)[0];
+    if (remapped === q.anchor) return q;
     changed = true;
     return { ...q, anchor: remapped, updatedAt: now };
   });
@@ -331,10 +328,90 @@ export function nudgeQuestion(questions: Question[], id: string, dir: -1 | 1, no
 // 内容タグ（回答の一部に付けるタグ）
 // ---------------------------------------------------------------------------
 
-/** 回答の編集後に、範囲つきの項目（内容タグ・リンク）を追従させる。位置が合えばそのまま／引用を探し直す／消えたら broken */
-function remapRanges<T extends { start: number; end: number; quote: string; broken?: boolean }>(newText: string, items: T[]): T[] {
+/** 編集前後の文字列の違い。先頭から同じ部分と末尾から同じ部分を除いた、真ん中の 1 か所の置き換えとして表す */
+export interface TextEdit {
+  /** 変更が始まる位置 */
+  p: number;
+  /** 元の文字列で置き換えられた長さ */
+  oldLen: number;
+  /** 新しい文字列で置き換えた長さ */
+  newLen: number;
+}
+
+export function diffEdit(oldText: string, newText: string): TextEdit | null {
+  if (oldText === newText) return null;
+  const max = Math.min(oldText.length, newText.length);
+  let p = 0;
+  while (p < max && oldText[p] === newText[p]) p++;
+  let so = oldText.length;
+  let sn = newText.length;
+  while (so > p && sn > p && oldText[so - 1] === newText[sn - 1]) {
+    so--;
+    sn--;
+  }
+  return { p, oldLen: so - p, newLen: sn - p };
+}
+
+/**
+ * 範囲を、編集の前後で対応させる。範囲の中を直しても範囲は保たれ、範囲より前の編集は位置をずらすだけ。
+ *  - 範囲の左端への挿入は範囲の外（範囲が右へずれる）、右端への挿入も範囲の外。内側への挿入は範囲が伸びる
+ *  - 範囲の一部を置き換えたら、置き換えた文字も範囲に含める
+ *  - 範囲の全体を消したら null（外れた扱い）。範囲よりずっと大きな領域を貼り替えた場合も null（回答の大部分の貼り替えなど）
+ */
+export function mapThroughEdit(r: { start: number; end: number }, e: TextEdit): { start: number; end: number } | null {
+  const { p, oldLen, newLen } = e;
+  const delta = newLen - oldLen;
+  const oldEnd = p + oldLen;
+  let start: number;
+  let end: number;
+  if (oldLen === 0) {
+    start = r.start >= p ? r.start + delta : r.start;
+    end = r.end > p ? r.end + delta : r.end;
+  } else {
+    // 置き換えられた領域が範囲に重なるとき、領域が範囲よりずっと大きい（= 回答の大部分・全体を貼り替えた）と、
+    // 範囲の行き先が分からないので追従しない（範囲が回答全体に広がってしまうのを防ぐ）。
+    // 新旧の末尾がたまたま同じでも、重なりが部分的なだけで大きく広がらないようにする
+    if (p < r.end && oldEnd > r.start) {
+      const len = r.end - r.start;
+      const overshoot = Math.max(0, r.start - p) + Math.max(0, oldEnd - r.end); // 領域のうち、範囲の外にはみ出した長さ
+      if (overshoot > len * 0.5 + 4) return null;
+      // 範囲を丸ごと別の文で置き換えた場合は、元の長さに近いときだけ追従する（言い換え）
+      if (r.start >= p && r.end <= oldEnd && newLen > Math.max(len * 2, len + 20)) return null;
+    }
+    start = r.start <= p ? r.start : r.start >= oldEnd ? r.start + delta : p;
+    end = r.end <= p ? r.end : r.end >= oldEnd ? r.end + delta : p + newLen;
+    if (r.start >= p && r.end <= oldEnd) {
+      start = p;
+      end = p + newLen;
+    }
+  }
+  return end > start ? { start, end } : null;
+}
+
+/**
+ * 回答の編集後に、範囲つきの項目（内容タグ・リンク・深掘りの引用）を追従させる。
+ *  1. oldText が分かれば、編集の位置をたどって範囲を保つ（引用の内側を直しても外れない）。引用は新しい文に更新する
+ *  2. たどれなかったら（範囲ごと消された／移動された）、同じ引用の文字列を探し直す
+ *  3. それでも見つからなければ broken にする（引用は残すので、あとで付け直せる）
+ */
+function remapRanges<T extends { start: number; end: number; quote: string; broken?: boolean }>(
+  newText: string,
+  items: T[],
+  oldText?: string,
+): T[] {
+  const edit = oldText === undefined ? null : diffEdit(oldText, newText);
+  if (oldText !== undefined && edit === null) return items; // 回答は変わっていない
   let changed = false;
   const next = items.map((m) => {
+    if (edit && !m.broken) {
+      const mapped = mapThroughEdit(m, edit);
+      if (mapped) {
+        const quote = newText.slice(mapped.start, mapped.end);
+        if (mapped.start === m.start && mapped.end === m.end && quote === m.quote) return m;
+        changed = true;
+        return { ...m, start: mapped.start, end: mapped.end, quote, broken: undefined };
+      }
+    }
     const r = remapAnchor(newText, { start: m.start, end: m.end, quote: m.quote, broken: m.broken });
     if (r.start === m.start && r.end === m.end && !!r.broken === !!m.broken) return m;
     changed = true;
@@ -343,12 +420,12 @@ function remapRanges<T extends { start: number; end: number; quote: string; brok
   return changed ? next : items;
 }
 
-export function remapMarks(newText: string, marks: Mark[]): Mark[] {
-  return remapRanges(newText, marks);
+export function remapMarks(newText: string, marks: Mark[], oldText?: string): Mark[] {
+  return remapRanges(newText, marks, oldText);
 }
 
-export function remapLinks(newText: string, links: Link[]): Link[] {
-  return remapRanges(newText, links);
+export function remapLinks(newText: string, links: Link[], oldText?: string): Link[] {
+  return remapRanges(newText, links, oldText);
 }
 
 /** 範囲を段落（改行区切り）の境界まで広げる */
