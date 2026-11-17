@@ -4,16 +4,53 @@ import { parseData, serialize } from './merge';
 const API = 'https://api.github.com';
 export const GIST_FILE = 'interview-qa.json';
 
+export type GistErrorKind = 'network' | 'auth' | 'permission' | 'rate' | 'notfound' | 'other';
+
 export class GistError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly kind: GistErrorKind = 'other',
+    /** kind が 'rate' のとき: この時間（ミリ秒）は GitHub に送らずに待つ */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
   }
 }
 
 type Fetch = typeof fetch;
+
+const DEFAULT_RATE_WAIT_MS = 60_000;
+
+/**
+ * GitHub の 403 / 429 を、原因ごとに見分ける。
+ *  - 1 時間あたりの回数の上限（x-ratelimit-remaining が 0）… リセット時刻まで待つ
+ *  - 短時間の連続した書き込みの制限（secondary rate limit。retry-after が付く）… 指定の秒数だけ待つ
+ *  - それ以外の 403 … トークンに gist の権限がない、など。待っても直らない
+ */
+export function classifyForbidden(status: number, headers: { get(name: string): string | null }, message: string, now = Date.now()): GistError {
+  const retryAfter = Number(headers.get('retry-after'));
+  const remaining = headers.get('x-ratelimit-remaining');
+  const reset = Number(headers.get('x-ratelimit-reset'));
+  const primary = remaining === '0';
+  const secondary = /secondary rate limit|abuse detection/i.test(message) || (retryAfter > 0 && !primary);
+  const rate = status === 429 || primary || secondary || /rate limit/i.test(message);
+
+  if (!rate) {
+    return new GistError(
+      'GitHub がこのトークンでの操作を許可していません。トークンに「gist」の権限があるか確認してください（作り直すときに gist にチェック）',
+      status,
+      'permission',
+    );
+  }
+  let waitMs = DEFAULT_RATE_WAIT_MS;
+  if (retryAfter > 0) waitMs = retryAfter * 1000;
+  else if (primary && reset > 0) waitMs = Math.max(0, reset * 1000 - now);
+  // 待ち時間が極端なときも、短すぎず長すぎないように丸める
+  waitMs = Math.min(Math.max(waitMs, 30_000), 60 * 60_000);
+  const kindText = primary ? 'GitHub の 1 時間あたりの回数制限に達しました' : 'GitHub が短時間の連続した書き込みを制限しています';
+  return new GistError(kindText, status, 'rate', waitMs);
+}
 
 async function request(f: Fetch, token: string, path: string, init: RequestInit = {}) {
   let res: Response;
@@ -30,12 +67,25 @@ async function request(f: Fetch, token: string, path: string, init: RequestInit 
       },
     });
   } catch {
-    throw new GistError('ネットワークに接続できません');
+    throw new GistError('ネットワークに接続できません', undefined, 'network');
   }
   if (res.ok) return res;
-  if (res.status === 401) throw new GistError('トークンが無効です（再発行して設定し直してください）', 401);
-  if (res.status === 403 || res.status === 429) throw new GistError('GitHub の利用制限に達しました。少し待ってください', res.status);
-  if (res.status === 404) throw new GistError('Gist が見つかりません（ID またはトークンの gist 権限を確認）', 404);
+  if (res.status === 401) throw new GistError('トークンが無効です（再発行して設定し直してください）', 401, 'auth');
+  if (res.status === 403 || res.status === 429) {
+    let message = '';
+    try {
+      const text = await res.text();
+      try {
+        message = String(JSON.parse(text)?.message ?? '');
+      } catch {
+        message = text;
+      }
+    } catch {
+      /* 本文が読めなくても、ヘッダーから判断する */
+    }
+    throw classifyForbidden(res.status, res.headers, message);
+  }
+  if (res.status === 404) throw new GistError('Gist が見つかりません（ID またはトークンの gist 権限を確認）', 404, 'notfound');
   throw new GistError(`GitHub API エラー (${res.status})`, res.status);
 }
 

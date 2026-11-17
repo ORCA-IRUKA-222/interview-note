@@ -1,13 +1,38 @@
 import type { Data, Interview, Question } from '../types';
 import { emptyData } from './model';
 
+/** キーの順序に依存しない文字列化（同じ内容なら必ず同じ文字列になる） */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * 同じ updatedAt で内容が違うとき、どちらを残すか。どちらの端末で統合しても同じ結果になるよう、
+ * 入力の順序に依らない決め方にする（内容が多い方、同じ長さなら文字列の大きい方）。
+ * 先に渡した側を残す方式だと、2 台が互いに自分の版を送り合って止まらなくなる。
+ */
+function tieWinner<T>(x: T, y: T): T {
+  const cx = canonical(x);
+  const cy = canonical(y);
+  if (cx.length !== cy.length) return cx.length > cy.length ? x : y;
+  return cx >= cy ? x : y;
+}
+
 function pickNewer<T extends { id: string; updatedAt: number }>(a: T[], b: T[]): T[] {
   const map = new Map<string, T>();
   for (const item of a) map.set(item.id, item);
   for (const item of b) {
     const existing = map.get(item.id);
-    // 同時刻なら先に入れた側(a)を残す。どちらでも収束するが決定的にしておく
     if (!existing || item.updatedAt > existing.updatedAt) map.set(item.id, item);
+    else if (item.updatedAt === existing.updatedAt) map.set(item.id, tieWinner(existing, item));
   }
   return [...map.values()];
 }

@@ -15,7 +15,7 @@ export function Settings() {
 
   const connect = async () => {
     updateSettings({ token: token.trim(), gistId: gistId.trim() });
-    if (token.trim()) await syncNow();
+    if (token.trim()) await syncNow({ manual: true });
   };
 
   const disconnect = () => {

@@ -97,7 +97,7 @@ export function SyncChip() {
       label = '同期中…';
       break;
     case 'error':
-      label = '同期エラー';
+      label = sync.message.includes('自動でやり直します') ? '制限中・自動で再開' : '同期エラー';
       break;
   }
   return (
@@ -105,7 +105,7 @@ export function SyncChip() {
       type="button"
       class={`sync sync-${sync.status}`}
       title={sync.message || label}
-      onClick={() => (settings.token ? void syncNow() : go(paths.settings))}
+      onClick={() => (settings.token ? void syncNow({ manual: true }) : go(paths.settings))}
     >
       <span class="sync-dot" />
       <span class="sync-label">{label}</span>
