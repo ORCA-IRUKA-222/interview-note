@@ -3,17 +3,19 @@ import { ALIGNER_PRESETS, ScriptAligner } from '../lib/text/aligner';
 import { boundaries, previousBoundary, sentenceEnd, sentenceStart } from '../lib/text/sentences';
 import { SpeechBuffer } from '../lib/text/speechBuffer';
 import { ContinuousRecognizer, speechSupported } from '../lib/speech';
+import { altLabel } from '../lib/model';
 import { updateSettings, useAppState } from '../lib/store';
 import type { Sensitivity } from '../types';
 import { caretOffset } from './common';
 import { paths } from './router';
 
-type Source = 'answer' | 'keyPoints';
+/** 読み上げる文: メインの回答 / 要点 / サブの回答（'alt:<id>'） */
+type Source = 'answer' | 'keyPoints' | `alt:${string}`;
 
-export function Karaoke({ qid }: { qid: string }) {
+export function Karaoke({ qid, src }: { qid: string; src?: string }) {
   const { data, settings } = useAppState();
   const q = data.questions.find((x) => x.id === qid);
-  const [source, setSource] = useState<Source>('answer');
+  const [source, setSource] = useState<Source>(src === 'keyPoints' || (src && src.startsWith('alt:')) ? (src as Source) : 'answer');
   const [running, setRunning] = useState(false);
   const [boundary, setBoundary] = useState(0);
   const [heard, setHeard] = useState('');
@@ -35,7 +37,8 @@ export function Karaoke({ qid }: { qid: string }) {
     });
   }, []);
 
-  const text = q ? (source === 'keyPoints' ? q.keyPoints : q.answer) : '';
+  const altIn = q && source.startsWith('alt:') ? q.alternatives.find((a) => a.id === source.slice(4)) : undefined;
+  const text = q ? (source === 'keyPoints' ? q.keyPoints : altIn ? altIn.text : source.startsWith('alt:') ? '' : q.answer) : '';
   const cfg = settings.karaoke;
 
   const aligner = useRef<ScriptAligner | undefined>(undefined);
@@ -183,6 +186,12 @@ export function Karaoke({ qid }: { qid: string }) {
 
   const progress = Math.round((aligner.current?.progress() ?? 0) * 100);
   const hasPoints = q.keyPoints.trim().length > 0;
+  // 読み上げる文の選択肢: メインの回答、書いてあるサブの回答、要点
+  const sources: { key: Source; label: string }[] = [
+    { key: 'answer', label: '回答' },
+    ...q.alternatives.flatMap((a, i) => (a.text.trim() ? [{ key: `alt:${a.id}` as Source, label: altLabel(a, i) }] : [])),
+    ...(hasPoints ? [{ key: 'keyPoints' as Source, label: '要点' }] : []),
+  ];
 
   return (
     <main class="page karaoke">
@@ -202,14 +211,13 @@ export function Karaoke({ qid }: { qid: string }) {
             ⏱ タイマーで進める
           </button>
         </div>
-        {hasPoints && (
-          <div class="seg">
-            <button type="button" class={source === 'answer' ? 'on' : ''} onClick={() => (setSource('answer'), seek(0))}>
-              回答
-            </button>
-            <button type="button" class={source === 'keyPoints' ? 'on' : ''} onClick={() => (setSource('keyPoints'), seek(0))}>
-              要点
-            </button>
+        {sources.length > 1 && (
+          <div class="seg seg-wrap" role="group" aria-label="読み上げる文">
+            {sources.map((s) => (
+              <button type="button" key={s.key} class={source === s.key ? 'on' : ''} onClick={() => (setSource(s.key), seek(0))}>
+                {s.label}
+              </button>
+            ))}
           </div>
         )}
         <label class="inline">
@@ -321,7 +329,7 @@ export function Karaoke({ qid }: { qid: string }) {
           ))}
         </div>
       ) : (
-        <div class="empty">読み上げる{source === 'keyPoints' ? '要点' : '回答'}がありません。</div>
+        <div class="empty">読み上げる{source === 'keyPoints' ? '要点' : source.startsWith('alt:') ? 'サブの回答' : '回答'}がありません。</div>
       )}
 
       <div class="k-dock">

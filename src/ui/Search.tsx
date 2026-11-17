@@ -5,7 +5,7 @@ import { useAppState } from '../lib/store';
 import { StatusDot } from './common';
 import { paths, replace } from './router';
 
-const FIELD_LABEL = { text: '質問', answer: '回答', keyPoints: '要点', tags: 'タグ', interview: '面接' } as const;
+const FIELD_LABEL = { text: '質問', answer: '回答', alt: 'サブの回答', keyPoints: '要点', tags: 'タグ', interview: '面接' } as const;
 
 export function Search({ q: initialQ, tag: initialTag }: { q: string; tag?: string }) {
   const { data } = useAppState();

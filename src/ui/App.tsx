@@ -48,7 +48,7 @@ export function App() {
       body = <Study key={`${route.iid}|${route.tag}`} iid={route.iid} tag={route.tag} />;
       break;
     case 'karaoke':
-      body = <Karaoke key={route.qid} qid={route.qid} />;
+      body = <Karaoke key={`${route.qid}|${route.src}`} qid={route.qid} src={route.src} />;
       break;
     case 'search':
       body = <Search q={route.q} tag={route.tag} />;

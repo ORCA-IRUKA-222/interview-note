@@ -10,6 +10,7 @@ import {
   insertionOrder,
   makeAnchor,
   moveQuestion as planMove,
+  promoteAlternative as planPromote,
   newId,
   nudgeQuestion as planNudge,
   remapChildAnchors,
@@ -437,5 +438,41 @@ export function reanchorMark(questionId: string, markId: string, range: { start:
   updateQuestion(questionId, {
     marks: q.marks.map((m) => (m.id === markId ? { id: m.id, tag: m.tag, start: a.start, end: a.end, quote: a.quote } : m)),
   });
+  return true;
+}
+
+// ---- サブの回答（別案） ---------------------------------------------------------
+
+/** サブの回答を追加する。text を渡せば、その文を初期値にする（メインの複製など）。追加した id を返す */
+export function addAlternative(questionId: string, init: { label?: string; text?: string } = {}): string | null {
+  const q = state.data.questions.find((x) => x.id === questionId);
+  if (!q) return null;
+  const now = Date.now();
+  const alt = { id: newId(), label: init.label ?? '', text: init.text ?? '', createdAt: now, updatedAt: now };
+  updateQuestion(questionId, { alternatives: [...q.alternatives, alt] });
+  return alt.id;
+}
+
+export function updateAlternative(questionId: string, altId: string, patch: { label?: string; text?: string }) {
+  const q = state.data.questions.find((x) => x.id === questionId);
+  if (!q || !q.alternatives.some((a) => a.id === altId)) return;
+  const now = Date.now();
+  updateQuestion(questionId, { alternatives: q.alternatives.map((a) => (a.id === altId ? { ...a, ...patch, updatedAt: now } : a)) });
+}
+
+export function removeAlternative(questionId: string, altId: string) {
+  const q = state.data.questions.find((x) => x.id === questionId);
+  if (q) updateQuestion(questionId, { alternatives: q.alternatives.filter((a) => a.id !== altId) });
+}
+
+/**
+ * サブの回答をメインにする（いまのメインはサブへ移る）。
+ * メインに付けた深掘り・リンク・内容タグの箇所は、新しいメインの文では見つからないものが外れた扱いになり、付け直せる。
+ */
+export function promoteAlternative(questionId: string, altId: string): boolean {
+  const q = state.data.questions.find((x) => x.id === questionId);
+  const next = q && planPromote(q, altId);
+  if (!q || !next) return false;
+  updateQuestion(questionId, next);
   return true;
 }

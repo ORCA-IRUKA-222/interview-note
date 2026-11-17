@@ -35,6 +35,10 @@ function interviewMarkdown(interview: Interview, questions: Question[]): string 
       lines.push('', `> 深掘り元 Q${parentLabel ?? '?'}: 「${q.anchor.quote}」`);
     }
     if (q.answer.trim()) lines.push('', q.answer.trim());
+    const alts = q.alternatives.filter((a) => a.text.trim());
+    alts.forEach((a, i) => {
+      lines.push('', `**サブの回答 ${i + 1}${a.label.trim() ? `: ${a.label.trim()}` : ''}**`, '', a.text.trim());
+    });
     if (q.marks.length) {
       lines.push('', '**内容タグ**', '', ...q.marks.filter((m) => !m.broken).map((m) => `- #${m.tag} 「${m.quote.replace(/\s+/g, ' ')}」`));
     }

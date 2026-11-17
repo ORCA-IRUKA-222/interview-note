@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { allTags, interviewName, keyPointLines } from '../lib/model';
+import { allTags, altLabel, interviewName, keyPointLines } from '../lib/model';
 import { gradeQuestion, useAppState } from '../lib/store';
 import { buildDeck, isDue, todayString, type DeckOptions } from '../lib/srs';
 import type { Question } from '../types';
@@ -70,6 +70,19 @@ function Card({ q, flipped, onFlip }: { q: Question; flipped: boolean; onFlip():
             <>
               <h4>回答</h4>
               <p class="face-answer">{q.answer}</p>
+            </>
+          )}
+          {q.alternatives.some((a) => a.text.trim()) && (
+            <>
+              <h4>サブの回答（別案）</h4>
+              {q.alternatives.map((a, i) =>
+                a.text.trim() ? (
+                  <div class="face-alt" key={a.id}>
+                    <span class="face-alt-label">{altLabel(a, i)}</span>
+                    <p class="face-answer">{a.text}</p>
+                  </div>
+                ) : null,
+              )}
             </>
           )}
           {follow.length > 0 && (

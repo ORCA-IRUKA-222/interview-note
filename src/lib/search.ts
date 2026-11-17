@@ -6,7 +6,7 @@ export interface SearchHit {
   question: Question;
   interview: Interview;
   /** どこに当たったか */
-  field: 'text' | 'answer' | 'keyPoints' | 'tags' | 'interview';
+  field: 'text' | 'answer' | 'alt' | 'keyPoints' | 'tags' | 'interview';
   snippet: string;
 }
 
@@ -30,6 +30,7 @@ export function search(data: Data, query: string, tag?: string, opts: { intervie
     const fields: [SearchHit['field'], string][] = [
       ['text', q.text],
       ['answer', q.answer],
+      ['alt', q.alternatives.map((a) => `${a.label} ${a.text}`).join('\n')],
       ['keyPoints', q.keyPoints],
       ['tags', [...q.tags, ...q.marks.map((m) => m.tag)].join(' ')],
       ['interview', `${interviewName(interview, '')} ${interview.title}`],
@@ -58,7 +59,7 @@ export function search(data: Data, query: string, tag?: string, opts: { intervie
 }
 
 function fieldRank(f: SearchHit['field']): number {
-  return { text: 0, keyPoints: 1, answer: 2, tags: 3, interview: 4 }[f];
+  return { text: 0, keyPoints: 1, answer: 2, alt: 3, tags: 4, interview: 5 }[f];
 }
 
 function makeSnippet(raw: string, at: number, radius = 36): string {

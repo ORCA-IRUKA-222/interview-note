@@ -32,6 +32,20 @@ export interface Link {
   broken?: boolean;
 }
 
+/**
+ * サブの回答（別案）。メインの回答とは別に、いくつでも持てる任意の項目。
+ * 「同じ案ばかりになる」のを避けて、別の切り口の回答も用意しておくために使う。
+ * 深掘り・リンク・内容タグの箇所はメインの回答にだけ付く（サブは文章だけ）。
+ */
+export interface AltAnswer {
+  id: string;
+  /** 見分けるための名前（例: 数字で語る版）。空でもよい */
+  label: string;
+  text: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export type Status = 'todo' | 'draft' | 'done';
 
 /** 単語帳（フラッシュカード）の学習状態 */
@@ -59,6 +73,8 @@ export interface Question {
   marks: Mark[];
   /** 回答の中から他の質問へのリンク */
   links: Link[];
+  /** サブの回答（任意。なくてよい） */
+  alternatives: AltAnswer[];
   status: Status;
   order: number;
   card: CardState;

@@ -28,6 +28,7 @@ import {
 import type { Question } from '../types';
 import { AutoTextarea, selectionOffsets, ShareBar, StatusDot, STATUS_LABEL, tagLine, tagTint, TagEditor } from './common';
 import { shareOfQuestion } from '../lib/stats';
+import { Alternatives } from './Alternatives';
 import { toggleBothColumns, useLayout } from './layout';
 import { go, paths } from './router';
 
@@ -766,6 +767,8 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
         ) : (
           <p class="muted">回答がまだありません。「編集」から書き始めましょう。</p>
         )}
+
+        <Alternatives q={q} onNotice={setNotice} />
 
         {(q.links.length > 0 || backlinks.length > 0) && (
           <div class="links-block">

@@ -1,4 +1,4 @@
-import type { Anchor, Data, Interview, Link, Mark, Question } from '../types';
+import type { AltAnswer, Anchor, Data, Interview, Link, Mark, Question } from '../types';
 import { normalize } from './text/normalizer';
 
 export function newId(): string {
@@ -49,6 +49,7 @@ export function createQuestion(
     tags: [],
     marks: [],
     links: [],
+    alternatives: [],
     status: 'todo',
     order: now,
     card: { box: 0, due: null, seen: 0 },
@@ -85,6 +86,7 @@ export function copySubtree(
       tags: [...q.tags],
       marks: q.marks.map((m) => ({ ...m, id: newId() })),
       links: q.links.map((l) => ({ ...l, id: newId(), targetId: idMap.get(l.targetId) ?? l.targetId })),
+      alternatives: q.alternatives.map((a) => ({ ...a, id: newId(), createdAt: now, updatedAt: now })),
       card: { box: 0, due: null, seen: 0 },
       order: isRoot && rootOrder !== undefined ? rootOrder : now + index,
       createdAt: now,
@@ -501,11 +503,33 @@ export function suggestLinkTargets(data: Data, quote: string, excludeId: string,
   const scored: { q: Question; score: number }[] = [];
   for (const q of data.questions) {
     if (q.id === excludeId) continue;
-    const have = bigrams(`${q.text} ${q.text} ${q.answer} ${q.keyPoints}`);
+    const have = bigrams(`${q.text} ${q.text} ${q.answer} ${q.keyPoints} ${q.alternatives.map((a) => a.text).join(' ')}`);
     let hit = 0;
     for (const g of want) if (have.has(g)) hit++;
     const score = hit / want.size;
     if (score >= 0.2) scored.push({ q, score });
   }
   return scored.sort((a, b) => b.score - a.score || a.q.order - b.q.order).slice(0, limit).map((s) => s.q);
+}
+
+// ---------------------------------------------------------------------------
+// サブの回答（別案）
+// ---------------------------------------------------------------------------
+
+/** サブの回答の表示名。名前が空なら「サブ 1」のような連番 */
+export function altLabel(alt: AltAnswer, index: number): string {
+  return alt.label.trim() || `サブ ${index + 1}`;
+}
+
+/**
+ * サブの回答をメインの回答と入れ替える。いまのメインは同じ場所へサブとして移り、名前は「元のメイン」にする。
+ * 返すのは更新後の answer と alternatives（質問に当てはめるのは呼び出し側）。見つからなければ null。
+ */
+export function promoteAlternative(q: Pick<Question, 'answer' | 'alternatives'>, altId: string, now = Date.now()): { answer: string; alternatives: AltAnswer[] } | null {
+  const target = q.alternatives.find((a) => a.id === altId);
+  if (!target) return null;
+  return {
+    answer: target.text,
+    alternatives: q.alternatives.map((a) => (a.id === altId ? { ...a, label: '元のメイン', text: q.answer, updatedAt: now } : a)),
+  };
 }

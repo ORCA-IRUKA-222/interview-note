@@ -5,7 +5,7 @@ export type Route =
   | { name: 'interview'; iid: string }
   | { name: 'question'; iid: string; qid: string; from?: string }
   | { name: 'study'; iid?: string; tag?: string }
-  | { name: 'karaoke'; qid: string }
+  | { name: 'karaoke'; qid: string; src?: string }
   | { name: 'search'; q: string; tag?: string }
   | { name: 'stats'; iid?: string }
   | { name: 'settings' };
@@ -22,7 +22,8 @@ export const paths = {
     const s = p.toString();
     return `#/study${s ? `?${s}` : ''}`;
   },
-  karaoke: (qid: string) => `#/karaoke/${qid}`,
+  /** src: 読み上げる文（'answer' / 'keyPoints' / 'alt:<サブの回答の id>'）。省略はメインの回答 */
+  karaoke: (qid: string, src?: string) => `#/karaoke/${qid}${src ? `?src=${encodeURIComponent(src)}` : ''}`,
   search: (q = '', tag?: string) => {
     const p = new URLSearchParams();
     if (q) p.set('q', q);
@@ -43,7 +44,7 @@ export function parseRoute(hash: string): Route {
     return { name: 'interview', iid: seg[1] };
   }
   if (seg[0] === 'study') return { name: 'study', iid: params.get('i') ?? undefined, tag: params.get('tag') ?? undefined };
-  if (seg[0] === 'karaoke' && seg[1]) return { name: 'karaoke', qid: seg[1] };
+  if (seg[0] === 'karaoke' && seg[1]) return { name: 'karaoke', qid: seg[1], src: params.get('src') ?? undefined };
   if (seg[0] === 'search') return { name: 'search', q: params.get('q') ?? '', tag: params.get('tag') ?? undefined };
   if (seg[0] === 'stats') return { name: 'stats', iid: params.get('i') ?? undefined };
   if (seg[0] === 'settings') return { name: 'settings' };
