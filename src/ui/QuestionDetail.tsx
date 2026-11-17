@@ -16,6 +16,7 @@ import { addLink, addMark, addQuestion, deleteQuestion, removeLink, removeMark, 
 import type { Question } from '../types';
 import { AutoTextarea, selectionOffsets, ShareBar, StatusDot, STATUS_LABEL, tagLine, tagTint, TagEditor } from './common';
 import { shareOfQuestion } from '../lib/stats';
+import { toggleBothColumns, useLayout } from './layout';
 import { go, paths } from './router';
 
 /** 選択が止まってから操作バーを出すまでの待ち（タッチで選択範囲の端をつかんで動かしている間は出さない） */
@@ -334,6 +335,7 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
   const q = data.questions.find((x) => x.id === qid);
   const [mode, setMode] = useState<'view' | 'edit'>(() => (q && q.answer ? 'view' : 'edit'));
   const [sel, setSel] = useState<Selection | null>(null);
+  const layout = useLayout();
   const [picker, setPicker] = useState<Target[] | null>(null);
   const [notice, setNotice] = useState('');
   const answerRef = useRef<HTMLDivElement | null>(null);
@@ -355,6 +357,8 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
   const pressing = useRef(false);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const evaluateRef = useRef<() => void>(() => undefined);
+  /** 選んだ文の上端が、スクロール領域の上端からどれだけ下にあったか（選んだ瞬間） */
+  const selTop = useRef<number | null>(null);
   const schedule = (delay: number) => {
     clearTimeout(settleTimer.current);
     settleTimer.current = setTimeout(() => evaluateRef.current(), delay);
@@ -372,7 +376,13 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
     if (barRef.current?.contains(document.activeElement)) return;
     const next = selectionOffsets(container);
     clearTimeout(hideTimer.current);
-    if (next) setSel(next);
+    if (next) {
+      // 操作パネルが右に出ると文章の折り返しが変わるので、選んだ文が画面のどこにあったかを覚えておく
+      const range = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0) : null;
+      const scroller = container.closest('.col-body');
+      if (range && scroller) selTop.current = range.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      setSel(next);
+    }
     else hideTimer.current = setTimeout(() => setSel(null), 250);
   };
   evaluateRef.current = mode === 'view' ? readView : readTextarea;
@@ -435,14 +445,24 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
 
     const scroller = section.querySelector<HTMLElement>('.col-body');
     const range = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0) : null;
-    const raf = requestAnimationFrame(() => {
-      if (!scroller || !range || range.collapsed) return;
-      const r = range.getBoundingClientRect();
-      const top = scroller.getBoundingClientRect().top;
-      const visibleBottom = bar.getBoundingClientRect().top - 12;
-      if (r.height > visibleBottom - top - 24) return; // 画面より大きい選択は動かさない
-      if (r.bottom > visibleBottom) scroller.scrollTop += r.bottom - visibleBottom;
-    });
+    // 画面の下に重ねる表示か、右に出す表示（文章の領域が狭くなる）かは CSS が決める
+    const overlay = getComputedStyle(bar).position === 'absolute';
+    const raf = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!scroller || !range || range.collapsed) return;
+        const r = range.getBoundingClientRect();
+        const box = scroller.getBoundingClientRect();
+        if (!overlay) {
+          // 右に出した場合: 折り返しの変化で動いた分を戻し、選んだ文を「選んだときに見えていた位置」に保つ
+          if (selTop.current !== null) scroller.scrollTop += r.top - box.top - selTop.current;
+          return;
+        }
+        // 下に重ねた場合: 選んだ文がバーに隠れるときだけ、見える位置まで動かす
+        const visibleBottom = bar.getBoundingClientRect().top - 12;
+        if (r.height > visibleBottom - box.top - 24) return; // 画面より大きい選択は動かさない
+        if (r.bottom > visibleBottom) scroller.scrollTop += r.bottom - visibleBottom;
+      }),
+    );
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
@@ -533,7 +553,8 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
   const backHref = q.parentId ? paths.question(q.interviewId, q.parentId) : paths.interview(q.interviewId);
 
   return (
-    <section class="col col-detail" aria-label="質問の詳細" ref={sectionRef}>
+    <section class="col col-detail detail-split" aria-label="質問の詳細" ref={sectionRef}>
+      <div class="detail-main">
       <header class="col-head">
         <a class="btn back" href={paths.interview(iid)}>
           ← 質問一覧
@@ -542,6 +563,14 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
         <a class={`btn ${q.answer.trim() ? '' : 'disabled'}`} href={q.answer.trim() ? paths.karaoke(q.id) : undefined} aria-disabled={!q.answer.trim()}>
           🎤 カラオケ
         </a>
+        <button
+          type="button"
+          class="btn wide-btn"
+          onClick={toggleBothColumns}
+          title="左の「面接」「質問」の列を閉じて、この画面を広く使う（もう一度押すと戻る）"
+        >
+          {layout.list && layout.tree ? '▶ 一覧を開く' : '◀ 一覧を閉じる'}
+        </button>
       </header>
 
       <div class="col-body detail-body">
@@ -788,6 +817,8 @@ export function QuestionDetail({ iid, qid, from }: { iid: string; qid: string; f
             この質問を削除
           </button>
         </div>
+      </div>
+
       </div>
 
       {anchor && (

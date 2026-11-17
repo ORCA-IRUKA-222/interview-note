@@ -7,6 +7,7 @@ import { isDue, todayString } from '../lib/srs';
 import type { Interview } from '../types';
 import { StatusDot } from './common';
 import { guardTouchScroll, pressStart, useDrag } from './drag';
+import { toggleColumn, useLayout } from './layout';
 import { ClipboardBar, RowMenu } from './Organize';
 import { go, paths } from './router';
 
@@ -45,13 +46,41 @@ function InterviewRow({ i, selected }: { i: Interview; selected?: string }) {
   );
 }
 
+/** 閉じた列の細い帯。押すと開く（PC の 3 列表示のときだけ見える） */
+function Rail({ which, label, className }: { which: 'list' | 'tree'; label: string; className: string }) {
+  return (
+    <section class={`col ${className} collapsed`} aria-label={`${label}の列（閉じています）`}>
+      <button type="button" class="rail" onClick={() => toggleColumn(which)} aria-label={`${label}の列を開く`} title={`${label}の列を開く`}>
+        <span class="rail-arrow" aria-hidden="true">▶</span>
+        <span class="rail-label">{label}</span>
+      </button>
+    </section>
+  );
+}
+
+function CollapseButton({ which, label }: { which: 'list' | 'tree'; label: string }) {
+  return (
+    <button
+      type="button"
+      class="icon-btn collapse-btn"
+      onClick={() => toggleColumn(which)}
+      aria-label={`${label}の列を閉じる`}
+      title={`${label}の列を閉じて、右の画面を広く使う`}
+    >
+      ◀
+    </button>
+  );
+}
+
 export function InterviewList({ selected }: { selected?: string }) {
   const { data } = useAppState();
+  const layout = useLayout();
   const common = data.interviews.find((i) => i.id === COMMON_ID);
   const companies = data.interviews
     .filter((i) => i.id !== COMMON_ID)
     .sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.createdAt - a.createdAt);
   const create = () => go(paths.interview(addInterview()));
+  if (layout.list) return <Rail which="list" label="面接" className="col-list" />;
   return (
     <section class="col col-list" aria-label="面接の一覧">
       <header class="col-head">
@@ -59,6 +88,7 @@ export function InterviewList({ selected }: { selected?: string }) {
         <button type="button" class="btn primary" onClick={create}>
           ＋ 会社を追加
         </button>
+        <CollapseButton which="list" label="面接" />
       </header>
       <div class="col-body">
         {common && (
@@ -155,6 +185,7 @@ function CommonSearch({ iid }: { iid: string }) {
 export function QuestionTree({ iid, selected }: { iid: string; selected?: string }) {
   const { data, clipboard } = useAppState();
   const drag = useDrag();
+  const layout = useLayout();
   const interview = data.interviews.find((i) => i.id === iid);
   const [draft, setDraft] = useState('');
   const [editing, setEditing] = useState(() => !!interview && interview.kind !== 'common' && !interview.company && !interview.title);
@@ -172,6 +203,8 @@ export function QuestionTree({ iid, selected }: { iid: string; selected?: string
       </section>
     );
   }
+
+  if (layout.tree) return <Rail which="tree" label="質問" className="col-tree" />;
 
   const rows = flattenTree(data.questions, iid);
   const today = todayString();
@@ -201,6 +234,7 @@ export function QuestionTree({ iid, selected }: { iid: string; selected?: string
         <button type="button" class="btn" aria-expanded={editing} onClick={() => setEditing(!editing)}>
           {editing ? '閉じる' : '編集'}
         </button>
+        <CollapseButton which="tree" label="質問" />
       </header>
       <div class="col-body">
         {interview.kind === 'common' && (

@@ -8,6 +8,7 @@ import { Search } from './Search';
 import { Settings } from './Settings';
 import { Stats } from './Stats';
 import { DragLayer } from './Organize';
+import { useLayout } from './layout';
 import { paths, useRoute } from './router';
 
 function TopBar() {
@@ -38,6 +39,7 @@ function TopBar() {
 
 export function App() {
   useAppState();
+  const layout = useLayout();
   const route = useRoute();
 
   let body;
@@ -62,7 +64,7 @@ export function App() {
       const qid = route.name === 'question' ? route.qid : undefined;
       const depth = qid ? 2 : iid ? 1 : 0;
       body = (
-        <div class="columns" data-depth={depth}>
+        <div class="columns" data-depth={depth} data-list={layout.list ? 'closed' : 'open'} data-tree={layout.tree ? 'closed' : 'open'}>
           <InterviewList selected={iid} />
           {iid ? (
             <QuestionTree key={iid} iid={iid} selected={qid} />
